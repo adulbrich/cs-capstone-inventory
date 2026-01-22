@@ -1,0 +1,2 @@
+# Ignore Svelte files; editor handles formatting via svelte extension
+*.svelte

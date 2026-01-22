@@ -1,10 +1,37 @@
 <script lang="ts">
   import {
+    AlertCircle,
+    CheckCircle2,
+    Package,
+    Plus,
+    Users,
+  } from "@lucide/svelte";
+  import { enhance } from "$app/forms";
+  import { invalidateAll } from "$app/navigation";
+  import { Badge } from "$lib/components/ui/badge";
+  import { Button } from "$lib/components/ui/button";
+  import {
     Card,
     CardContent,
     CardHeader,
     CardTitle,
   } from "$lib/components/ui/card";
+  import { Input } from "$lib/components/ui/input";
+  import { Label } from "$lib/components/ui/label";
+  import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+  } from "$lib/components/ui/select";
+  import {
+    Sheet,
+    SheetContent,
+    SheetDescription,
+    SheetFooter,
+    SheetHeader,
+    SheetTitle,
+  } from "$lib/components/ui/sheet";
   import {
     Table,
     TableBody,
@@ -13,69 +40,80 @@
     TableHeader,
     TableRow,
   } from "$lib/components/ui/table";
-  import * as Sheet from "$lib/components/ui/sheet";
-  import { Button } from "$lib/components/ui/button";
-  import { Input } from "$lib/components/ui/input";
-  import { Label } from "$lib/components/ui/label";
   import { Textarea } from "$lib/components/ui/textarea";
-  import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-  } from "$lib/components/ui/select";
-  import { Badge } from "$lib/components/ui/badge";
-  import {
-    Package,
-    Users,
-    AlertCircle,
-    CheckCircle2,
-    Plus,
-  } from "@lucide/svelte";
-  import { enhance } from "$app/forms";
-  import { invalidateAll } from "$app/navigation";
 
-  let { data } = $props();
+  type Item = {
+    id: string;
+    title: string;
+    tag_label?: string;
+    description?: string;
+    location?: string;
+    status: string;
+    checked_out_to?: string;
+    tags?: string[];
+    created_at: string;
+  };
 
-  // Sheet state
+  type Request = {
+    id: string;
+    user_id: string;
+    item_id: string;
+    status: string;
+    created_at: string;
+    item: Item;
+    user: {
+      full_name?: string;
+      email?: string;
+    };
+  };
+
+  type PageData = {
+    items: Item[];
+    requests: Request[];
+    stats: {
+      totalItems: number;
+      checkedOut: number;
+      retired: number;
+      pendingRequests: number;
+      activeUsers: number;
+    };
+  };
+
+  const { data } = $props<{ data: PageData }>();
+
   let isSheetOpen = $state(false);
-  let editingItem: any = $state(null);
+  let editingItem = $state<Item | null>(null);
 
-  // Form fields
   let title = $state("");
+  let tag_label = $state("");
   let description = $state("");
   let location = $state("");
-  let status = $state("checked_in");
-  let selectValue = $state("available"); // Mapped value for Select component
-  let tag_label = $state("");
+  let selectValue = $state("available");
   let checked_out_to = $state("");
   let tags = $state("");
 
-  function openEditSheet(item: any) {
-    editingItem = item;
-    title = item.title;
-    description = item.description || "";
-    location = item.location || "";
-    status = item.status;
-    // Map checked_in to available to avoid key collision in Select
-    selectValue = item.status === "checked_in" ? "available" : item.status;
-    tag_label = item.tag_label || "";
-    checked_out_to = item.checked_out_to || "";
-    tags = item.tags?.join(", ") || "";
-    isSheetOpen = true;
-  }
-
   function openAddSheet() {
+    isSheetOpen = true;
     editingItem = null;
     title = "";
+    tag_label = "";
     description = "";
     location = "";
-    status = "checked_in";
     selectValue = "available";
-    tag_label = "";
     checked_out_to = "";
     tags = "";
+  }
+
+  function openEditSheet(item: Item) {
     isSheetOpen = true;
+    editingItem = item;
+    title = item.title || "";
+    tag_label = item.tag_label || "";
+    description = item.description || "";
+    location = item.location || "";
+    selectValue = item.status === "checked_in" ? "available" : item.status;
+    checked_out_to = item.checked_out_to || "";
+    tags = item.tags?.join(", ") || "";
   }
 
   function getStatusLabel(status: string) {
@@ -96,7 +134,7 @@
   <div class="flex items-center justify-between">
     <h1 class="text-3xl font-bold tracking-tight">Admin Dashboard</h1>
     <Button onclick={openAddSheet}>
-      <Plus class="mr-2 h-4 w-4" />
+      <Plus class="mr-2 h-4 w-4"/>
       Add Item
     </Button>
   </div>
@@ -108,7 +146,7 @@
         class="flex flex-row items-center justify-between space-y-0 pb-2"
       >
         <CardTitle class="text-sm font-medium">Total Items</CardTitle>
-        <Package class="h-4 w-4 text-muted-foreground" />
+        <Package class="h-4 w-4 text-muted-foreground"/>
       </CardHeader>
       <CardContent>
         <div class="text-2xl font-bold">{data?.stats?.totalItems || 0}</div>
@@ -120,7 +158,7 @@
         class="flex flex-row items-center justify-between space-y-0 pb-2"
       >
         <CardTitle class="text-sm font-medium">Checked Out</CardTitle>
-        <CheckCircle2 class="h-4 w-4 text-muted-foreground" />
+        <CheckCircle2 class="h-4 w-4 text-muted-foreground"/>
       </CardHeader>
       <CardContent>
         <div class="text-2xl font-bold">{data?.stats?.checkedOut || 0}</div>
@@ -132,7 +170,7 @@
         class="flex flex-row items-center justify-between space-y-0 pb-2"
       >
         <CardTitle class="text-sm font-medium">Retired Items</CardTitle>
-        <AlertCircle class="h-4 w-4 text-muted-foreground" />
+        <AlertCircle class="h-4 w-4 text-muted-foreground"/>
       </CardHeader>
       <CardContent>
         <div class="text-2xl font-bold">{data?.stats?.retired || 0}</div>
@@ -144,7 +182,7 @@
         class="flex flex-row items-center justify-between space-y-0 pb-2"
       >
         <CardTitle class="text-sm font-medium">Active Users</CardTitle>
-        <Users class="h-4 w-4 text-muted-foreground" />
+        <Users class="h-4 w-4 text-muted-foreground"/>
       </CardHeader>
       <CardContent>
         <div class="text-2xl font-bold">
@@ -154,6 +192,102 @@
       </CardContent>
     </Card>
   </div>
+
+  <!-- Requests Table -->
+  {#if data?.requests && data.requests.length > 0}
+    <Card>
+      <CardHeader>
+        <CardTitle>Item Requests</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div class="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Item</TableHead>
+                <TableHead>User</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Date</TableHead>
+                <TableHead>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {#each data.requests as request (request.id)}
+                <TableRow>
+                  <TableCell class="font-medium"
+                    >{request.item?.title || "Unknown Item"}</TableCell
+                  >
+                  <TableCell>
+                    <div class="flex flex-col">
+                      <span>{request.user?.full_name || "Unknown User"}</span>
+                      <span class="text-xs text-muted-foreground"
+                        >{request.user?.email || ""}</span
+                      >
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant={request.status === "pending"
+                        ? "outline"
+                        : "secondary"}
+                      class={request.status === "pending"
+                        ? "bg-yellow-100 text-yellow-800 border-yellow-200"
+                        : request.status === "approved"
+                          ? "bg-green-100 text-green-800"
+                          : request.status === "refused"
+                            ? "bg-red-100 text-red-800"
+                            : ""}
+                    >
+                      {request.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell
+                    >{new Date(
+                      request.created_at,
+                    ).toLocaleDateString()}</TableCell
+                  >
+                  <TableCell>
+                    {#if request.status === "pending"}
+                      <div class="flex gap-2">
+                        <form
+                          action="?/approveRequest"
+                          method="POST"
+                          use:enhance
+                        >
+                          <input
+                            type="hidden"
+                            name="requestId"
+                            value={request.id}
+                          />
+                          <Button size="sm" variant="default" type="submit"
+                            >Approve</Button
+                          >
+                        </form>
+                        <form
+                          action="?/refuseRequest"
+                          method="POST"
+                          use:enhance
+                        >
+                          <input
+                            type="hidden"
+                            name="requestId"
+                            value={request.id}
+                          />
+                          <Button size="sm" variant="destructive" type="submit"
+                            >Refuse</Button
+                          >
+                        </form>
+                      </div>
+                    {/if}
+                  </TableCell>
+                </TableRow>
+              {/each}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  {/if}
 
   <!-- Data Table -->
   <Card>
@@ -173,7 +307,7 @@
             </TableRow>
           </TableHeader>
           <TableBody>
-            {#each data?.items || [] as item (item.id)}
+            {#each data.items as item (item.id)}
               <TableRow
                 class="cursor-pointer hover:bg-muted/50"
                 onclick={() => openEditSheet(item)}
@@ -203,14 +337,14 @@
 </div>
 
 <!-- Edit/Add Item Sheet -->
-<Sheet.Root bind:open={isSheetOpen}>
-  <Sheet.Content class="overflow-y-auto p-6">
-    <Sheet.Header class="p-0">
-      <Sheet.Title>{editingItem ? "Edit Item" : "Add New Item"}</Sheet.Title>
-      <Sheet.Description>
+<Sheet bind:open={isSheetOpen}>
+  <SheetContent class="overflow-y-auto p-6">
+    <SheetHeader class="p-0">
+      <SheetTitle>{editingItem ? "Edit Item" : "Add New Item"}</SheetTitle>
+      <SheetDescription>
         Make changes to the inventory item here. Click save when you're done.
-      </Sheet.Description>
-    </Sheet.Header>
+      </SheetDescription>
+    </SheetHeader>
 
     <form
       method="POST"
@@ -229,13 +363,13 @@
       }}
     >
       {#if editingItem}
-        <input type="hidden" name="id" value={editingItem.id} />
+        <input type="hidden" name="id" value={editingItem.id}>
       {/if}
 
       <div class="grid gap-4 py-4">
         <div class="grid gap-2">
           <Label for="title">Title</Label>
-          <Input id="title" name="title" bind:value={title} required />
+          <Input id="title" name="title" bind:value={title} required/>
         </div>
         <div class="grid gap-2">
           <Label for="tag_label">Tag Label</Label>
@@ -256,7 +390,7 @@
         </div>
         <div class="grid gap-2">
           <Label for="location">Location</Label>
-          <Input id="location" name="location" bind:value={location} />
+          <Input id="location" name="location" bind:value={location}/>
         </div>
         <div class="grid gap-2">
           <Label for="status">Status</Label>
@@ -264,7 +398,7 @@
             type="hidden"
             name="status"
             value={selectValue === "available" ? "checked_in" : selectValue}
-          />
+          >
           <Select type="single" bind:value={selectValue}>
             <SelectTrigger>
               {selectValue === "available"
@@ -274,12 +408,12 @@
                   : "Retired"}
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="available" label="Available"
-                >Available</SelectItem
-              >
-              <SelectItem value="checked_out" label="Checked Out"
-                >Checked Out</SelectItem
-              >
+              <SelectItem value="available" label="Available">
+                Available
+              </SelectItem>
+              <SelectItem value="checked_out" label="Checked Out">
+                Checked Out
+              </SelectItem>
               <SelectItem value="retired" label="Retired">Retired</SelectItem>
             </SelectContent>
           </Select>
@@ -307,9 +441,9 @@
         </div>
       </div>
 
-      <Sheet.Footer>
+      <SheetFooter>
         <Button type="submit">Save changes</Button>
-      </Sheet.Footer>
+      </SheetFooter>
     </form>
-  </Sheet.Content>
-</Sheet.Root>
+  </SheetContent>
+</Sheet>
