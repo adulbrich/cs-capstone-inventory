@@ -1,7 +1,7 @@
 <script lang="ts">
   import "./layout.css";
   import { onMount } from "svelte";
-  import { invalidate } from "$app/navigation";
+  import { goto, invalidate } from "$app/navigation";
   import { page } from "$app/stores";
 
   let { data, children } = $props();
@@ -26,7 +26,17 @@
       <nav class="flex items-center space-x-4">
         <a href="/" class="font-semibold">Search Inventory</a>
         <a href="/admin" class="font-semibold">Manage Inventory</a>
-        {#if !session}
+        {#if session}
+          <button
+            class="font-semibold"
+            onclick={async () => {
+              await supabase.auth.signOut();
+              await goto("/");
+            }}
+          >
+            Logout
+          </button>
+        {:else}
           <a href="/login" class="font-semibold">Login</a>
         {/if}
       </nav>
