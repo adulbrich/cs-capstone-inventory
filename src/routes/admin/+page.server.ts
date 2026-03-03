@@ -111,6 +111,11 @@ export const actions = {
       return fail(401, { error: "Unauthorized" });
     }
 
+    const { data: creatorProfile } = await supabase.from("profiles").select("role").eq("id", session.user.id).single();
+    if (!creatorProfile || !["admin", "instructor"].includes(creatorProfile.role)) {
+      return fail(403, { error: "Forbidden" });
+    }
+
     const formData = await request.formData();
     const title = formData.get("title") as string;
     const description = formData.get("description") as string;
@@ -167,6 +172,11 @@ export const actions = {
       throw redirect(303, "/login");
     }
 
+    const { data: updaterProfile } = await event.locals.supabase.from("profiles").select("role").eq("id", session.user.id).single();
+    if (!updaterProfile || !["admin", "instructor"].includes(updaterProfile.role)) {
+      return fail(403, { error: "Forbidden" });
+    }
+
     const formData = await event.request.formData();
     const id = formData.get("id") as string;
     const title = formData.get("title") as string;
@@ -220,6 +230,11 @@ export const actions = {
       return fail(401, { error: "Unauthorized" });
     }
 
+    const { data: deleterProfile } = await supabase.from("profiles").select("role").eq("id", session.user.id).single();
+    if (!deleterProfile || !["admin", "instructor"].includes(deleterProfile.role)) {
+      return fail(403, { error: "Forbidden" });
+    }
+
     const formData = await request.formData();
     const id = formData.get("id") as string;
 
@@ -229,6 +244,18 @@ export const actions = {
       console.error("Error deleting item:", error);
       return fail(500, { error: error.message || "Failed to delete item" });
     }
+
+    // Log to audit trail (non-fatal) — item_id will become null after deletion (FK set null)
+    if (session) {
+      const { error: txError } = await supabase.from("transactions").insert({
+        item_id: id,
+        user_id: session.user.id,
+        action: "note_added",
+        notes: `Item deleted (id: ${id})`,
+      });
+      if (txError) console.error("Failed to log transaction:", txError);
+    }
+
     return { success: true };
   },
 
@@ -236,6 +263,11 @@ export const actions = {
     const { session } = await safeGetSession();
     if (!session) {
       return fail(401, { message: "Unauthorized" });
+    }
+
+    const { data: approverProfile } = await supabase.from("profiles").select("role").eq("id", session.user.id).single();
+    if (!approverProfile || !["admin", "instructor"].includes(approverProfile.role)) {
+      return fail(403, { error: "Forbidden" });
     }
 
     const formData = await request.formData();
@@ -293,6 +325,11 @@ export const actions = {
     const { session } = await safeGetSession();
     if (!session) {
       return fail(401, { message: "Unauthorized" });
+    }
+
+    const { data: refuserProfile } = await supabase.from("profiles").select("role").eq("id", session.user.id).single();
+    if (!refuserProfile || !["admin", "instructor"].includes(refuserProfile.role)) {
+      return fail(403, { error: "Forbidden" });
     }
 
     const formData = await request.formData();
