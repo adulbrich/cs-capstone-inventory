@@ -67,9 +67,21 @@
     };
   };
 
+  type Transaction = {
+    id: string;
+    item_id: string | null;
+    user_id: string | null;
+    action: string;
+    notes: string | null;
+    created_at: string;
+    item: { title: string } | null;
+    user: { full_name?: string | null };
+  };
+
   type PageData = {
     items: Item[];
     requests: Request[];
+    auditLog: Transaction[];
     stats: {
       totalItems: number;
       checkedOut: number;
@@ -334,6 +346,53 @@
       </div>
     </CardContent>
   </Card>
+
+  <!-- Audit Log -->
+  {#if data.auditLog && data.auditLog.length > 0}
+    <Card>
+      <CardHeader>
+        <CardTitle>Audit Log</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div class="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Item</TableHead>
+                <TableHead>User</TableHead>
+                <TableHead>Action</TableHead>
+                <TableHead>Notes</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {#each data.auditLog as entry (entry.id)}
+                <TableRow>
+                  <TableCell class="text-xs text-muted-foreground whitespace-nowrap">
+                    {new Date(entry.created_at).toLocaleString()}
+                  </TableCell>
+                  <TableCell class="font-medium">
+                    {entry.item?.title || "—"}
+                  </TableCell>
+                  <TableCell>
+                    {entry.user?.full_name || "—"}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary" class="text-xs">
+                      {entry.action.replace("_", " ")}
+                    </Badge>
+                  </TableCell>
+                  <TableCell class="text-sm text-muted-foreground max-w-[200px] truncate">
+                    {entry.notes || "—"}
+                  </TableCell>
+                </TableRow>
+              {/each}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  {/if}
 </div>
 
 <!-- Edit/Add Item Sheet -->

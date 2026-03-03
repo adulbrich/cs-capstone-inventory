@@ -59,9 +59,41 @@ export const load: PageServerLoad = async ({
     item: (items || []).find((item) => item.id === req.item_id) ?? null,
   }));
 
+  // Fetch 50 most recent transactions with item title
+  const { data: transactionLogs } = await supabase
+    .from("transactions")
+    .select("*, item:items(title)")
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  // Resolve user names for transactions
+  const txUserIds = [
+    ...new Set(
+      (transactionLogs || []).map((t) => t.user_id).filter(Boolean)
+    ),
+  ] as string[];
+  let txProfilesById: Record<string, { full_name: string | null }> = {};
+  if (txUserIds.length > 0) {
+    const { data: txProfiles } = await supabase
+      .from("profiles")
+      .select("id, full_name")
+      .in("id", txUserIds);
+    if (txProfiles) {
+      txProfilesById = Object.fromEntries(
+        txProfiles.map((p) => [p.id, { full_name: p.full_name }])
+      );
+    }
+  }
+
+  const auditLog = (transactionLogs || []).map((t) => ({
+    ...t,
+    user: txProfilesById[t.user_id] ?? {},
+  }));
+
   return {
     items: items || [],
     requests: requestsWithData,
+    auditLog,
     stats: {
       totalItems,
       checkedOut,
