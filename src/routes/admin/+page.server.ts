@@ -2,15 +2,8 @@ import { fail, redirect } from "@sveltejs/kit";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({
-  locals: { supabase, safeGetSession },
+  locals: { supabase },
 }) => {
-  const { session } = await safeGetSession();
-
-  // Redirect to login if not authenticated
-  if (!session) {
-    throw redirect(303, "/login");
-  }
-
   // Fetch all items
   const { data: items, error: itemsError } = await supabase
     .from("items")
