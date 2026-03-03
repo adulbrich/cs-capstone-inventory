@@ -35,7 +35,8 @@ export const load: PageServerLoad = async ({
 
   const { count: activeUsers } = await supabase
     .from("profiles")
-    .select("*", { count: "exact", head: true });
+    .select("*", { count: "exact", head: true })
+    .neq("role", "admin");
 
   // Fetch profiles for request users (second query to avoid FK join issues)
   const requestUserIds = [...new Set((requests || []).map((r) => r.user_id))];

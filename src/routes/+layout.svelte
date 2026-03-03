@@ -1,7 +1,7 @@
 <script lang="ts">
   import "./layout.css";
   import { onMount } from "svelte";
-  import { goto, invalidate } from "$app/navigation";
+  import { goto, invalidate, invalidateAll } from "$app/navigation";
   import { page } from "$app/stores";
 
   let { data, children } = $props();
@@ -35,6 +35,7 @@
               } catch {
                 // ignore signOut errors, still navigate home
               }
+              await invalidateAll();
               await goto("/");
             }}
           >

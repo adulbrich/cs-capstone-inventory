@@ -155,6 +155,9 @@
           <DropdownMenuItem onclick={() => (statusFilter = "checked_out")}>
             Checked Out
           </DropdownMenuItem>
+          <DropdownMenuItem onclick={() => (statusFilter = "requested")}>
+            Requested
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
