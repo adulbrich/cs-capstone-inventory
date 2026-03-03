@@ -16,7 +16,7 @@ export const load: PageServerLoad = async ({
     console.error("Error fetching items:", itemsError);
   }
 
-  let userRequests = [];
+  let userRequests: Record<string, unknown>[] = [];
   if (session) {
     const { data: requests, error: requestsError } = await supabase
       .from("requests")
