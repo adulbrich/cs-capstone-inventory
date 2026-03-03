@@ -33,15 +33,41 @@ export const load: PageServerLoad = async ({
   const pendingRequests =
     requests?.filter((req) => req.status === "pending").length || 0;
 
+  const { count: activeUsers } = await supabase
+    .from("profiles")
+    .select("*", { count: "exact", head: true });
+
+  // Fetch profiles for request users (second query to avoid FK join issues)
+  const requestUserIds = [...new Set((requests || []).map((r) => r.user_id))];
+  let profilesById: Record<string, { full_name: string | null }> = {};
+  if (requestUserIds.length > 0) {
+    const { data: requestProfiles } = await supabase
+      .from("profiles")
+      .select("id, full_name")
+      .in("id", requestUserIds);
+    if (requestProfiles) {
+      profilesById = Object.fromEntries(
+        requestProfiles.map((p) => [p.id, { full_name: p.full_name }])
+      );
+    }
+  }
+
+  // Merge user and item data into requests
+  const requestsWithData = (requests || []).map((req) => ({
+    ...req,
+    user: profilesById[req.user_id] ?? {},
+    item: (items || []).find((item) => item.id === req.item_id) ?? null,
+  }));
+
   return {
     items: items || [],
-    requests: requests || [],
+    requests: requestsWithData,
     stats: {
       totalItems,
       checkedOut,
       retired,
       pendingRequests,
-      activeUsers: 0, // Placeholder - would need to query profiles table
+      activeUsers: activeUsers ?? 0,
     },
   };
 };
