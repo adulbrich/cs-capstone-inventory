@@ -28,9 +28,13 @@
         <a href="/admin" class="font-semibold">Manage Inventory</a>
         {#if session}
           <button
-            class="font-semibold"
+            class="font-semibold cursor-pointer border-none bg-transparent p-0"
             onclick={async () => {
-              await supabase.auth.signOut();
+              try {
+                await supabase.auth.signOut();
+              } catch {
+                // ignore signOut errors, still navigate home
+              }
               await goto("/");
             }}
           >
