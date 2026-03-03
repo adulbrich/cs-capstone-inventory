@@ -33,10 +33,19 @@
       error = err.message;
       loading = false;
     } else {
-      // Invalidate to refresh session data
+      // Fetch profile to determine redirect destination
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", authData.user.id)
+        .single();
+
       await invalidateAll();
-      // Redirect to admin
-      goto("/admin");
+      const dest =
+        profile?.role === "admin" || profile?.role === "instructor"
+          ? "/admin"
+          : "/";
+      goto(dest);
     }
   }
 </script>
