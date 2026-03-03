@@ -47,7 +47,12 @@ export const load: PageServerLoad = async ({
 };
 
 export const actions = {
-  create: async ({ request, locals: { supabase } }) => {
+  create: async ({ request, locals: { supabase, safeGetSession } }) => {
+    const { session } = await safeGetSession();
+    if (!session) {
+      return fail(401, { error: "Unauthorized" });
+    }
+
     const formData = await request.formData();
     const title = formData.get("title") as string;
     const description = formData.get("description") as string;
@@ -88,7 +93,7 @@ export const actions = {
   },
 
   update: async (event) => {
-    const session = await event.locals.safeGetSession();
+    const { session } = await event.locals.safeGetSession();
     if (!session) {
       throw redirect(303, "/login");
     }
@@ -129,7 +134,12 @@ export const actions = {
     return { success: true };
   },
 
-  delete: async ({ request, locals: { supabase } }) => {
+  delete: async ({ request, locals: { supabase, safeGetSession } }) => {
+    const { session } = await safeGetSession();
+    if (!session) {
+      return fail(401, { error: "Unauthorized" });
+    }
+
     const formData = await request.formData();
     const id = formData.get("id") as string;
 
