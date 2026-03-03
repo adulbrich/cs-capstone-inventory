@@ -14,6 +14,12 @@
   import { Filter, Search } from "@lucide/svelte";
   import { Input } from "$lib/components/ui/input";
   import { Separator } from "$lib/components/ui/separator";
+  import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+  } from "$lib/components/ui/dropdown-menu";
 
   type Item = {
     id: string;
@@ -125,10 +131,32 @@
           bind:value={searchQuery}
         />
       </div>
-      <Button variant="outline" size="icon">
-        <Filter class="h-4 w-4"/>
-        <span class="sr-only">Filter</span>
-      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger>
+          {#snippet child({ props })}
+            <Button
+              variant="outline"
+              size="icon"
+              class={statusFilter !== "all" ? "border-primary" : ""}
+              {...props}
+            >
+              <Filter class="h-4 w-4 {statusFilter !== 'all' ? 'text-primary' : ''}" />
+              <span class="sr-only">Filter by status</span>
+            </Button>
+          {/snippet}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onclick={() => (statusFilter = "all")}>
+            All
+          </DropdownMenuItem>
+          <DropdownMenuItem onclick={() => (statusFilter = "checked_in")}>
+            Available
+          </DropdownMenuItem>
+          <DropdownMenuItem onclick={() => (statusFilter = "checked_out")}>
+            Checked Out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   </div>
 
