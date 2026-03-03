@@ -112,6 +112,17 @@ export const actions = {
       });
     }
 
+    // Log to audit trail (non-fatal)
+    if (session) {
+      const { error: txError } = await supabase.from("transactions").insert({
+        item_id: data.id,
+        user_id: session.user.id,
+        action: "note_added",
+        notes: `Item created: ${title}`,
+      });
+      if (txError) console.error("Failed to log transaction:", txError);
+    }
+
     return {
       success: true,
       item: data,
@@ -155,6 +166,17 @@ export const actions = {
     if (error) {
       console.error("Error updating item:", error);
       return fail(500, { error: error.message || "Failed to update item" });
+    }
+
+    // Log to audit trail (non-fatal)
+    if (session) {
+      const { error: txError } = await event.locals.supabase.from("transactions").insert({
+        item_id: id,
+        user_id: session.user.id,
+        action: "note_added",
+        notes: `Item updated: ${title}`,
+      });
+      if (txError) console.error("Failed to log transaction:", txError);
     }
 
     return { success: true };
@@ -223,6 +245,15 @@ export const actions = {
       return fail(500, { message: "Failed to update item status" });
     }
 
+    // Log to audit trail (non-fatal)
+    const { error: txError } = await supabase.from("transactions").insert({
+      item_id: reqData.item_id,
+      user_id: session.user.id,
+      action: "check_out",
+      notes: `Approved for ${reqData.user?.full_name || "student"}`,
+    });
+    if (txError) console.error("Failed to log transaction:", txError);
+
     return { success: true };
   },
 
@@ -266,6 +297,15 @@ export const actions = {
       console.error("Failed to revert item status:", updateItemError);
       return fail(500, { message: "Failed to revert item status" });
     }
+
+    // Log to audit trail (non-fatal)
+    const { error: txError } = await supabase.from("transactions").insert({
+      item_id: reqData.item_id,
+      user_id: session.user.id,
+      action: "check_in",
+      notes: "Request refused by admin",
+    });
+    if (txError) console.error("Failed to log transaction:", txError);
 
     return { success: true };
   },
