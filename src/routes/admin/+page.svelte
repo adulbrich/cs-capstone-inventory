@@ -54,17 +54,21 @@
     created_at: string;
   };
 
-  type Request = {
+  type CartRequestItem = {
+    id: string;
+    status: string;
+    item: { id: string; title: string } | null;
+  };
+
+  type CartRequest = {
     id: string;
     user_id: string;
-    item_id: string;
     status: string;
+    admin_note: string | null;
+    reviewed_at: string | null;
     created_at: string;
-    item: Item;
-    user: {
-      full_name?: string;
-      email?: string;
-    };
+    checkout_request_items: CartRequestItem[];
+    user: { full_name?: string | null };
   };
 
   type Transaction = {
@@ -80,7 +84,7 @@
 
   type PageData = {
     items: Item[];
-    requests: Request[];
+    cartRequests: CartRequest[];
     auditLog: Transaction[];
     stats: {
       totalItems: number;
@@ -139,6 +143,30 @@
       default:
         return status;
     }
+  }
+
+  let isReviewSheetOpen = $state(false);
+  let reviewingCart = $state<CartRequest | null>(null);
+  let reviewAdminNote = $state("");
+  let reviewDecisions = $state<Record<string, string>>({});
+
+  function openReviewSheet(cart: CartRequest) {
+    reviewingCart = cart;
+    reviewAdminNote = "";
+    reviewDecisions = Object.fromEntries(
+      cart.checkout_request_items.map((ci) => [ci.id, "approved"])
+    );
+    isReviewSheetOpen = true;
+  }
+
+  function getCartDerivedStatus(req: CartRequest) {
+    if (req.status === "pending") return "pending";
+    const items = req.checkout_request_items;
+    const approved = items.filter((i) => i.status === "approved").length;
+    const refused = items.filter((i) => i.status === "refused").length;
+    if (approved === items.length) return "approved";
+    if (refused === items.length) return "refused";
+    return "partial";
   }
 </script>
 
@@ -205,91 +233,53 @@
     </Card>
   </div>
 
-  <!-- Requests Table -->
-  {#if data?.requests && data.requests.length > 0}
+  <!-- Cart Requests Table -->
+  {#if data?.cartRequests && data.cartRequests.length > 0}
     <Card>
       <CardHeader>
-        <CardTitle>Item Requests</CardTitle>
+        <CardTitle>Cart Requests</CardTitle>
       </CardHeader>
       <CardContent>
         <div class="rounded-md border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Item</TableHead>
-                <TableHead>User</TableHead>
-                <TableHead>Status</TableHead>
                 <TableHead>Date</TableHead>
+                <TableHead>User</TableHead>
+                <TableHead># Items</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {#each data.requests as request (request.id)}
+              {#each data.cartRequests as req (req.id)}
+                {@const derived = getCartDerivedStatus(req)}
                 <TableRow>
-                  <TableCell class="font-medium"
-                    >{request.item?.title || "Unknown Item"}</TableCell
-                  >
-                  <TableCell>
-                    <div class="flex flex-col">
-                      <span>{request.user?.full_name || "Unknown User"}</span>
-                      <span class="text-xs text-muted-foreground"
-                        >{request.user?.email || ""}</span
-                      >
-                    </div>
+                  <TableCell class="text-sm text-muted-foreground">
+                    {new Date(req.created_at).toLocaleDateString()}
                   </TableCell>
+                  <TableCell>{req.user?.full_name || "Unknown User"}</TableCell>
+                  <TableCell>{req.checkout_request_items.length}</TableCell>
                   <TableCell>
                     <Badge
-                      variant={request.status === "pending"
-                        ? "outline"
-                        : "secondary"}
-                      class={request.status === "pending"
-                        ? "bg-yellow-100 text-yellow-800 border-yellow-200"
-                        : request.status === "approved"
-                          ? "bg-green-100 text-green-800"
-                          : request.status === "refused"
-                            ? "bg-red-100 text-red-800"
-                            : ""}
+                      class={
+                        derived === "pending" ? "bg-yellow-100 text-yellow-800" :
+                        derived === "approved" ? "bg-green-100 text-green-800" :
+                        derived === "partial" ? "bg-blue-100 text-blue-800" :
+                        "bg-red-100 text-red-800"
+                      }
                     >
-                      {request.status}
+                      {derived === "pending" ? "Pending" :
+                       derived === "approved" ? "Approved" :
+                       derived === "partial" ? "Partially Approved" :
+                       "Refused"}
                     </Badge>
                   </TableCell>
-                  <TableCell
-                    >{new Date(
-                      request.created_at,
-                    ).toLocaleDateString()}</TableCell
-                  >
                   <TableCell>
-                    {#if request.status === "pending"}
-                      <div class="flex gap-2">
-                        <form
-                          action="?/approveRequest"
-                          method="POST"
-                          use:enhance
-                        >
-                          <input
-                            type="hidden"
-                            name="requestId"
-                            value={request.id}
-                          />
-                          <Button size="sm" variant="default" type="submit"
-                            >Approve</Button
-                          >
-                        </form>
-                        <form
-                          action="?/refuseRequest"
-                          method="POST"
-                          use:enhance
-                        >
-                          <input
-                            type="hidden"
-                            name="requestId"
-                            value={request.id}
-                          />
-                          <Button size="sm" variant="destructive" type="submit"
-                            >Refuse</Button
-                          >
-                        </form>
-                      </div>
+                    {#if req.status === "pending"}
+                      <Button size="sm" onclick={() => openReviewSheet(req)}>
+                        Review
+                      </Button>
                     {/if}
                   </TableCell>
                 </TableRow>
@@ -504,5 +494,83 @@
         <Button type="submit">Save changes</Button>
       </SheetFooter>
     </form>
+  </SheetContent>
+</Sheet>
+
+<!-- Cart Review Sheet -->
+<Sheet bind:open={isReviewSheetOpen}>
+  <SheetContent class="overflow-y-auto p-6">
+    <SheetHeader class="p-0">
+      <SheetTitle>Review Cart Request</SheetTitle>
+      <SheetDescription>
+        {reviewingCart?.user?.full_name || "Student"} — submitted {reviewingCart ? new Date(reviewingCart.created_at).toLocaleDateString() : ""}
+      </SheetDescription>
+    </SheetHeader>
+
+    {#if reviewingCart}
+      <form
+        method="POST"
+        action="?/reviewCart"
+        use:enhance={() => {
+          return async ({ result }) => {
+            if (result.type === "success") {
+              isReviewSheetOpen = false;
+              await invalidateAll();
+            } else if (result.type === "failure") {
+              alert(`Error: ${result.data?.message || "Failed to submit review"}`);
+            }
+          };
+        }}
+      >
+        <input type="hidden" name="cartRequestId" value={reviewingCart.id} />
+        <div class="py-4 space-y-4">
+          <div>
+            <h3 class="text-sm font-semibold mb-2">Items</h3>
+            <div class="space-y-2">
+              {#each reviewingCart.checkout_request_items as cartItem (cartItem.id)}
+                <div class="flex items-center justify-between py-2 border-b">
+                  <span class="text-sm">{cartItem.item?.title ?? "Item removed"}</span>
+                  <div class="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={reviewDecisions[cartItem.id] === "approved" ? "default" : "outline"}
+                      onclick={() => (reviewDecisions[cartItem.id] = "approved")}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={reviewDecisions[cartItem.id] === "refused" ? "destructive" : "outline"}
+                      onclick={() => (reviewDecisions[cartItem.id] = "refused")}
+                    >
+                      Refuse
+                    </Button>
+                    <input
+                      type="hidden"
+                      name="decision"
+                      value="{cartItem.id}:{reviewDecisions[cartItem.id] ?? 'approved'}"
+                    />
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+          <div class="grid gap-2">
+            <Label for="adminNote">Admin Note (optional)</Label>
+            <Textarea
+              id="adminNote"
+              name="adminNote"
+              bind:value={reviewAdminNote}
+              placeholder="Add a note for the student..."
+            />
+          </div>
+        </div>
+        <SheetFooter>
+          <Button type="submit">Submit Review</Button>
+        </SheetFooter>
+      </form>
+    {/if}
   </SheetContent>
 </Sheet>
