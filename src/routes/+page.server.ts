@@ -16,155 +16,200 @@ export const load: PageServerLoad = async ({
     console.error("Error fetching items:", itemsError);
   }
 
-  let userRequests: Record<string, unknown>[] = [];
+  let userCartRequests: Record<string, unknown>[] = [];
+  let hasPendingCart = false;
   if (session) {
-    const { data: requests, error: requestsError } = await supabase
-      .from("requests")
-      .select("*, item:items(*)")
+    const { data: cartRequests, error: cartError } = await supabase
+      .from("checkout_requests")
+      .select(
+        "id, status, admin_note, created_at, checkout_request_items(id, status, item:items(id, title))"
+      )
       .eq("user_id", session.user.id)
       .order("created_at", { ascending: false });
 
-    if (requestsError) {
-      console.error("Error fetching requests:", requestsError);
+    if (cartError) {
+      console.error("Error fetching cart requests:", cartError);
     } else {
-      userRequests = requests;
+      userCartRequests = cartRequests || [];
+      hasPendingCart = (cartRequests || []).some((r) => r.status === "pending");
     }
   }
 
   return {
     items: items || [],
-    userRequests: userRequests || [],
+    userCartRequests,
+    hasPendingCart,
     session,
   };
 };
 
 export const actions: Actions = {
-  requestItem: async ({ request, locals: { supabase, safeGetSession } }) => {
+  submitCart: async ({ request, locals: { supabase, safeGetSession } }) => {
     const { session } = await safeGetSession();
     if (!session) {
-      return fail(401, { message: "You must be logged in to request items." });
+      return fail(401, { message: "You must be logged in to submit a request." });
     }
 
     const formData = await request.formData();
-    const itemId = formData.get("itemId") as string;
+    const itemIds = formData.getAll("itemId") as string[];
 
-    if (!itemId) {
-      return fail(400, { message: "Item ID is required." });
+    if (itemIds.length === 0) {
+      return fail(400, { message: "Cart is empty." });
     }
 
-    // Check if item is available
-    const { data: item, error: itemError } = await supabase
+    // Block duplicate pending cart
+    const { data: existing } = await supabase
+      .from("checkout_requests")
+      .select("id")
+      .eq("user_id", session.user.id)
+      .eq("status", "pending")
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      return fail(400, { message: "You already have a pending request." });
+    }
+
+    // Verify all items are still checked_in
+    const { data: itemsData, error: itemsError } = await supabase
       .from("items")
-      .select("status")
-      .eq("id", itemId)
+      .select("id, status")
+      .in("id", itemIds);
+
+    if (itemsError || !itemsData) {
+      return fail(500, { message: "Failed to verify items." });
+    }
+
+    const unavailable = itemsData.filter((i) => i.status !== "checked_in");
+    if (unavailable.length > 0) {
+      return fail(400, { message: "One or more items are no longer available." });
+    }
+
+    // Create checkout_request
+    const { data: cartRequest, error: cartError } = await supabase
+      .from("checkout_requests")
+      .insert({ user_id: session.user.id, status: "pending" })
+      .select("id")
       .single();
 
-    if (itemError || !item) {
-      return fail(404, { message: "Item not found." });
-    }
-
-    if (item.status !== "checked_in") {
-      return fail(400, { message: "Item is not available." });
-    }
-
-    // Start transaction to create request and update item status
-    // Note: Supabase doesn't support transactions via client directly easily without RPC,
-    // but we can do optimistic updates or sequential operations.
-    // Ideally this should be an RPC or we rely on RLS and constraints.
-    // For now, sequential operations.
-
-    const { error: requestError } = await supabase.from("requests").insert({
-      user_id: session.user.id,
-      item_id: itemId,
-      status: "pending",
-    });
-
-    if (requestError) {
+    if (cartError || !cartRequest) {
       return fail(500, { message: "Failed to create request." });
     }
 
+    // Create checkout_request_items
+    const { error: itemsInsertError } = await supabase
+      .from("checkout_request_items")
+      .insert(
+        itemIds.map((id) => ({
+          checkout_request_id: cartRequest.id,
+          item_id: id,
+          status: "pending",
+        }))
+      );
+
+    if (itemsInsertError) {
+      return fail(500, { message: "Failed to add items to request." });
+    }
+
+    // Update each item to requested
     const { error: updateError } = await supabase
       .from("items")
       .update({ status: "requested" })
-      .eq("id", itemId);
+      .in("id", itemIds);
 
     if (updateError) {
-      // Rollback request if possible, or just log error.
-      // In a real app, use RPC.
-      console.error("Failed to update item status:", updateError);
-      return fail(500, { message: "Failed to update item status." });
+      console.error("Failed to update item statuses:", updateError);
+      return fail(500, { message: "Failed to update item statuses." });
     }
 
-    // Log to audit trail (non-fatal)
-    const { error: txError1 } = await supabase.from("transactions").insert({
-      item_id: itemId,
-      user_id: session.user.id,
-      action: "check_out",
-      notes: "Item requested by student",
-    });
-    if (txError1) console.error("Failed to log transaction:", txError1);
+    // Audit log (non-fatal)
+    for (const itemId of itemIds) {
+      const { error: txError } = await supabase.from("transactions").insert({
+        item_id: itemId,
+        user_id: session.user.id,
+        action: "check_out",
+        notes: "Item added to cart request",
+      });
+      if (txError) console.error("Failed to log transaction:", txError);
+    }
 
     return { success: true };
   },
 
-  cancelRequest: async ({ request, locals: { supabase, safeGetSession } }) => {
+  cancelCart: async ({ request, locals: { supabase, safeGetSession } }) => {
     const { session } = await safeGetSession();
     if (!session) {
       return fail(401, { message: "You must be logged in." });
     }
 
     const formData = await request.formData();
-    const requestId = formData.get("requestId") as string;
+    const cartRequestId = formData.get("cartRequestId") as string;
 
-    if (!requestId) {
+    if (!cartRequestId) {
       return fail(400, { message: "Request ID is required." });
     }
 
-    // Get request to find item_id
-    const { data: reqData, error: reqError } = await supabase
-      .from("requests")
-      .select("item_id, status")
-      .eq("id", requestId)
-      .eq("user_id", session.user.id) // Ensure ownership
+    // Verify ownership and pending status
+    const { data: cartReq, error: cartReqError } = await supabase
+      .from("checkout_requests")
+      .select("id, status")
+      .eq("id", cartRequestId)
+      .eq("user_id", session.user.id)
       .single();
 
-    if (reqError || !reqData) {
+    if (cartReqError || !cartReq) {
       return fail(404, { message: "Request not found." });
     }
 
-    if (reqData.status !== "pending") {
+    if (cartReq.status !== "pending") {
       return fail(400, { message: "Can only cancel pending requests." });
     }
 
-    // Update request status
-    const { error: updateReqError } = await supabase
-      .from("requests")
-      .update({ status: "cancelled" })
-      .eq("id", requestId);
+    // Fetch the item IDs to revert
+    const { data: cartItems, error: itemsFetchError } = await supabase
+      .from("checkout_request_items")
+      .select("item_id")
+      .eq("checkout_request_id", cartRequestId);
 
-    if (updateReqError) {
+    if (itemsFetchError) {
+      return fail(500, { message: "Failed to fetch cart items." });
+    }
+
+    // Cancel the request
+    const { error: cancelError } = await supabase
+      .from("checkout_requests")
+      .update({ status: "cancelled" })
+      .eq("id", cartRequestId);
+
+    if (cancelError) {
       return fail(500, { message: "Failed to cancel request." });
     }
 
-    // Update item status back to checked_in
-    const { error: updateItemError } = await supabase
-      .from("items")
-      .update({ status: "checked_in" })
-      .eq("id", reqData.item_id);
+    // Revert items to checked_in
+    const itemIds = (cartItems || [])
+      .map((ci) => ci.item_id)
+      .filter(Boolean) as string[];
 
-    if (updateItemError) {
-      console.error("Failed to revert item status:", updateItemError);
-      return fail(500, { message: "Failed to revert item status." });
+    if (itemIds.length > 0) {
+      const { error: revertError } = await supabase
+        .from("items")
+        .update({ status: "checked_in" })
+        .in("id", itemIds);
+
+      if (revertError) {
+        console.error("Failed to revert item statuses:", revertError);
+      }
+
+      for (const itemId of itemIds) {
+        const { error: txError } = await supabase.from("transactions").insert({
+          item_id: itemId,
+          user_id: session.user.id,
+          action: "check_in",
+          notes: "Cart request cancelled by user",
+        });
+        if (txError) console.error("Failed to log transaction:", txError);
+      }
     }
-
-    // Log to audit trail (non-fatal)
-    const { error: txError2 } = await supabase.from("transactions").insert({
-      item_id: reqData.item_id,
-      user_id: session.user.id,
-      action: "check_in",
-      notes: "Request cancelled by student",
-    });
-    if (txError2) console.error("Failed to log transaction:", txError2);
 
     return { success: true };
   },
