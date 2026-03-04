@@ -14,15 +14,39 @@ export const load: PageServerLoad = async ({
     console.error("Error fetching items:", itemsError);
   }
 
-  // Fetch all requests (without joins to avoid missing FK relationship errors)
-  const { data: requests, error: requestsError } = await supabase
-    .from("requests")
-    .select("*")
+  // Fetch all checkout_requests with their items
+  const { data: cartRequestsRaw, error: cartRequestsError } = await supabase
+    .from("checkout_requests")
+    .select(
+      "id, user_id, status, admin_note, reviewed_at, created_at, checkout_request_items(id, status, item:items(id, title))"
+    )
     .order("created_at", { ascending: false });
 
-  if (requestsError) {
-    console.error("Error fetching requests:", requestsError);
+  if (cartRequestsError) {
+    console.error("Error fetching cart requests:", cartRequestsError);
   }
+
+  // Fetch profiles for cart request users
+  const cartUserIds = [
+    ...new Set((cartRequestsRaw || []).map((r) => r.user_id)),
+  ];
+  let cartProfilesById: Record<string, { full_name: string | null }> = {};
+  if (cartUserIds.length > 0) {
+    const { data: cartProfiles } = await supabase
+      .from("profiles")
+      .select("id, full_name")
+      .in("id", cartUserIds);
+    if (cartProfiles) {
+      cartProfilesById = Object.fromEntries(
+        cartProfiles.map((p) => [p.id, { full_name: p.full_name }])
+      );
+    }
+  }
+
+  const cartRequests = (cartRequestsRaw || []).map((req) => ({
+    ...req,
+    user: cartProfilesById[req.user_id] ?? {},
+  }));
 
   // Calculate statistics
   const totalItems = items?.length || 0;
@@ -30,35 +54,14 @@ export const load: PageServerLoad = async ({
     items?.filter((item) => item.status === "checked_out").length || 0;
   const retired =
     items?.filter((item) => item.status === "retired").length || 0;
-  const pendingRequests =
-    requests?.filter((req) => req.status === "pending").length || 0;
+  const pendingRequests = (cartRequestsRaw || []).filter(
+    (req) => req.status === "pending"
+  ).length;
 
   const { count: activeUsers } = await supabase
     .from("profiles")
     .select("*", { count: "exact", head: true })
     .neq("role", "admin");
-
-  // Fetch profiles for request users (second query to avoid FK join issues)
-  const requestUserIds = [...new Set((requests || []).map((r) => r.user_id))];
-  let profilesById: Record<string, { full_name: string | null }> = {};
-  if (requestUserIds.length > 0) {
-    const { data: requestProfiles } = await supabase
-      .from("profiles")
-      .select("id, full_name")
-      .in("id", requestUserIds);
-    if (requestProfiles) {
-      profilesById = Object.fromEntries(
-        requestProfiles.map((p) => [p.id, { full_name: p.full_name }])
-      );
-    }
-  }
-
-  // Merge user and item data into requests
-  const requestsWithData = (requests || []).map((req) => ({
-    ...req,
-    user: profilesById[req.user_id] ?? {},
-    item: (items || []).find((item) => item.id === req.item_id) ?? null,
-  }));
 
   // Fetch 50 most recent transactions with item title
   const { data: transactionLogs } = await supabase
@@ -93,7 +96,7 @@ export const load: PageServerLoad = async ({
 
   return {
     items: items || [],
-    requests: requestsWithData,
+    cartRequests,
     auditLog,
     stats: {
       totalItems,
@@ -246,7 +249,7 @@ export const actions = {
       return fail(500, { error: error.message || "Failed to delete item" });
     }
 
-    // Log to audit trail (non-fatal) — item_id will become null after deletion (FK set null)
+    // Log to audit trail (non-fatal)
     if (session) {
       const { error: txError } = await supabase.from("transactions").insert({
         item_id: id,
@@ -260,122 +263,121 @@ export const actions = {
     return { success: true };
   },
 
-  approveRequest: async ({ request, locals: { supabase, safeGetSession } }) => {
+  reviewCart: async ({ request, locals: { supabase, safeGetSession } }) => {
     const { session } = await safeGetSession();
     if (!session) {
       return fail(401, { message: "Unauthorized" });
     }
 
-    const { data: approverProfile } = await supabase.from("profiles").select("role").eq("id", session.user.id).single();
-    if (!approverProfile || !["admin", "instructor"].includes(approverProfile.role)) {
+    const { data: reviewerProfile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", session.user.id)
+      .single();
+    if (!reviewerProfile || !["admin", "instructor"].includes(reviewerProfile.role)) {
       return fail(403, { error: "Forbidden" });
     }
 
     const formData = await request.formData();
-    const requestId = formData.get("requestId") as string;
+    const cartRequestId = formData.get("cartRequestId") as string;
+    const adminNote = (formData.get("adminNote") as string)?.trim() || null;
+    // decisions format: "checkoutItemId:approved" or "checkoutItemId:refused"
+    const decisions = formData.getAll("decision") as string[];
 
-    // Get request details
-    const { data: reqData, error: reqError } = await supabase
-      .from("requests")
-      .select("*, user:profiles(*)")
-      .eq("id", requestId)
+    if (!cartRequestId) {
+      return fail(400, { message: "Cart request ID is required." });
+    }
+
+    // Fetch cart items to process
+    const { data: cartItems, error: fetchError } = await supabase
+      .from("checkout_request_items")
+      .select("id, item_id")
+      .eq("checkout_request_id", cartRequestId);
+
+    if (fetchError || !cartItems) {
+      return fail(404, { message: "Cart request not found." });
+    }
+
+    // Parse decisions map: checkoutItemId → "approved" | "refused"
+    const decisionMap = new Map<string, string>();
+    for (const d of decisions) {
+      const [id, status] = d.split(":");
+      if (id && (status === "approved" || status === "refused")) {
+        decisionMap.set(id, status);
+      }
+    }
+
+    // Get the requesting user's name for checked_out_to
+    const { data: cartRequest } = await supabase
+      .from("checkout_requests")
+      .select("user_id")
+      .eq("id", cartRequestId)
       .single();
 
-    if (reqError || !reqData) {
-      return fail(404, { message: "Request not found" });
+    let checkedOutToName = "Student";
+    if (cartRequest?.user_id) {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("id", cartRequest.user_id)
+        .single();
+      checkedOutToName = profile?.full_name || "Student";
     }
 
-    // Update request status
-    const { error: updateReqError } = await supabase
-      .from("requests")
-      .update({ status: "approved" })
-      .eq("id", requestId);
+    // Process each item decision
+    for (const cartItem of cartItems) {
+      const decision = decisionMap.get(cartItem.id) ?? "approved";
 
-    if (updateReqError) {
-      return fail(500, { message: "Failed to approve request" });
+      await supabase
+        .from("checkout_request_items")
+        .update({ status: decision })
+        .eq("id", cartItem.id);
+
+      if (!cartItem.item_id) continue;
+
+      if (decision === "approved") {
+        await supabase
+          .from("items")
+          .update({ status: "checked_out", checked_out_to: checkedOutToName })
+          .eq("id", cartItem.item_id);
+
+        const { error: txError } = await supabase.from("transactions").insert({
+          item_id: cartItem.item_id,
+          user_id: session.user.id,
+          action: "check_out",
+          notes: `Approved for ${checkedOutToName}`,
+        });
+        if (txError) console.error("Failed to log transaction:", txError);
+      } else {
+        await supabase
+          .from("items")
+          .update({ status: "checked_in" })
+          .eq("id", cartItem.item_id);
+
+        const { error: txError } = await supabase.from("transactions").insert({
+          item_id: cartItem.item_id,
+          user_id: session.user.id,
+          action: "check_in",
+          notes: "Refused in cart review",
+        });
+        if (txError) console.error("Failed to log transaction:", txError);
+      }
     }
 
-    // Update item status to checked_out
-    const { error: updateItemError } = await supabase
-      .from("items")
+    // Mark checkout_request as reviewed
+    const { error: reviewError } = await supabase
+      .from("checkout_requests")
       .update({
-        status: "checked_out",
-        checked_out_to:
-          reqData.user.full_name || reqData.user.email || "Student",
+        status: "reviewed",
+        admin_note: adminNote,
+        reviewed_by: session.user.id,
+        reviewed_at: new Date().toISOString(),
       })
-      .eq("id", reqData.item_id);
+      .eq("id", cartRequestId);
 
-    if (updateItemError) {
-      console.error("Failed to update item status:", updateItemError);
-      return fail(500, { message: "Failed to update item status" });
+    if (reviewError) {
+      return fail(500, { message: "Failed to mark request as reviewed." });
     }
-
-    // Log to audit trail (non-fatal)
-    const { error: txError } = await supabase.from("transactions").insert({
-      item_id: reqData.item_id,
-      user_id: session.user.id,
-      action: "check_out",
-      notes: `Approved for ${reqData.user?.full_name || "student"}`,
-    });
-    if (txError) console.error("Failed to log transaction:", txError);
-
-    return { success: true };
-  },
-
-  refuseRequest: async ({ request, locals: { supabase, safeGetSession } }) => {
-    const { session } = await safeGetSession();
-    if (!session) {
-      return fail(401, { message: "Unauthorized" });
-    }
-
-    const { data: refuserProfile } = await supabase.from("profiles").select("role").eq("id", session.user.id).single();
-    if (!refuserProfile || !["admin", "instructor"].includes(refuserProfile.role)) {
-      return fail(403, { error: "Forbidden" });
-    }
-
-    const formData = await request.formData();
-    const requestId = formData.get("requestId") as string;
-
-    // Get request details
-    const { data: reqData, error: reqError } = await supabase
-      .from("requests")
-      .select("item_id")
-      .eq("id", requestId)
-      .single();
-
-    if (reqError || !reqData) {
-      return fail(404, { message: "Request not found" });
-    }
-
-    // Update request status
-    const { error: updateReqError } = await supabase
-      .from("requests")
-      .update({ status: "refused" })
-      .eq("id", requestId);
-
-    if (updateReqError) {
-      return fail(500, { message: "Failed to refuse request" });
-    }
-
-    // Update item status back to checked_in
-    const { error: updateItemError } = await supabase
-      .from("items")
-      .update({ status: "checked_in" })
-      .eq("id", reqData.item_id);
-
-    if (updateItemError) {
-      console.error("Failed to revert item status:", updateItemError);
-      return fail(500, { message: "Failed to revert item status" });
-    }
-
-    // Log to audit trail (non-fatal)
-    const { error: txError } = await supabase.from("transactions").insert({
-      item_id: reqData.item_id,
-      user_id: session.user.id,
-      action: "check_in",
-      notes: "Request refused by admin",
-    });
-    if (txError) console.error("Failed to log transaction:", txError);
 
     return { success: true };
   },
