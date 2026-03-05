@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto, invalidateAll } from "$app/navigation";
+  import { page } from "$app/stores";
   import { Button } from "$lib/components/ui/button";
   import {
     Card,
@@ -18,34 +19,54 @@
   let email = $state("");
   let password = $state("");
   let loading = $state(false);
-  let error = $state("");
+  let ssoLoading = $state(false);
+  let error = $state(
+    $page.url.searchParams.get("error") === "sso_failed"
+      ? "SSO authentication failed. Please try again."
+      : "",
+  );
 
   async function handleLogin() {
     loading = true;
     error = "";
-    const { data: authData, error: err } =
-      await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+    const { data: authData, error: err } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
 
     if (err) {
       error = err.message;
       loading = false;
     } else {
-      // Fetch profile to determine redirect destination
       const { data: profile } = await supabase
         .from("profiles")
         .select("role")
         .eq("id", authData.user.id)
         .single();
-
       await invalidateAll();
-      const dest =
-        profile?.role === "admin" || profile?.role === "instructor"
-          ? "/admin"
-          : "/";
-      goto(dest);
+      goto(profile?.role === "admin" || profile?.role === "instructor" ? "/admin" : "/");
+    }
+  }
+
+  async function handleOsuLogin() {
+    ssoLoading = true;
+    error = "";
+
+    // ── Supabase SAML SSO for Oregon State University ONID ──────────────────
+    // After registering with OSU IT and adding their IdP metadata in Supabase
+    // Dashboard → Authentication → SSO Providers, replace the domain below
+    // with the providerId shown in the dashboard if automatic domain resolution
+    // doesn't work. See: https://supabase.com/docs/guides/auth/sso/auth-sso-saml
+    const { data: ssoData, error: ssoErr } = await supabase.auth.signInWithSSO({
+      domain: "oregonstate.edu",
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
+    });
+
+    if (ssoErr) {
+      error = ssoErr.message;
+      ssoLoading = false;
+    } else if (ssoData?.url) {
+      window.location.href = ssoData.url;
     }
   }
 </script>
@@ -54,72 +75,61 @@
   <Card class="w-full max-w-md">
     <CardHeader>
       <CardTitle class="text-2xl">Login</CardTitle>
-      <CardDescription>
-        Enter your email below to login to your account.
-      </CardDescription>
+      <CardDescription>Sign in with your OSU ONID or email account.</CardDescription>
     </CardHeader>
-    <CardContent class="grid gap-4">
-      {#if error}
-        <div class="text-red-500 text-sm">{error}</div>
-      {/if}
-      <div class="grid gap-2">
-        <Label for="email">Email</Label>
-        <Input
-          id="email"
-          type="email"
-          placeholder="m@example.com"
-          bind:value={email}
-          required
-        />
-      </div>
-      <div class="grid gap-2">
-        <Label for="password">Password</Label>
-        <Input id="password" type="password" bind:value={password} required/>
-      </div>
-    </CardContent>
-    <CardFooter class="flex flex-col gap-4">
-      <Button class="w-full" onclick={handleLogin} disabled={loading}>
-        {loading ? "Logging in..." : "Sign in"}
-      </Button>
-      <div class="relative">
-        <div class="absolute inset-0 flex items-center">
-          <span class="w-full border-t"></span>
+
+    <form onsubmit={(e) => { e.preventDefault(); handleLogin(); }}>
+      <CardContent class="grid gap-4">
+        {#if error}
+          <div class="text-red-500 text-sm">{error}</div>
+        {/if}
+        <div class="grid gap-2">
+          <Label for="email">Email</Label>
+          <Input
+            id="email"
+            type="email"
+            placeholder="you@oregonstate.edu"
+            bind:value={email}
+            required
+          />
         </div>
-        <div class="relative flex justify-center text-xs uppercase">
-          <span class="bg-background px-2 text-muted-foreground"
-            >Or continue with</span
-          >
+        <div class="grid gap-2">
+          <Label for="password">Password</Label>
+          <Input id="password" type="password" bind:value={password} required />
         </div>
-      </div>
-      <Button
-        variant="outline"
-        class="w-full"
-        onclick={async () => {
-          await supabase.auth.signInWithOAuth({
-            provider: "google",
-            options: {
-              redirectTo: `${window.location.origin}/auth/callback`,
-            },
-          });
-        }}
-      >
-        <svg
-          class="mr-2 h-4 w-4"
-          aria-hidden="true"
-          focusable="false"
-          data-prefix="fab"
-          data-icon="google"
-          role="img"
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 488 512"
+      </CardContent>
+      <CardFooter class="flex flex-col gap-4 pt-6">
+        <Button type="submit" class="w-full" disabled={loading || ssoLoading}>
+          {loading ? "Signing in..." : "Sign in"}
+        </Button>
+        <div class="relative w-full">
+          <div class="absolute inset-0 flex items-center">
+            <span class="w-full border-t"></span>
+          </div>
+          <div class="relative flex justify-center text-xs uppercase">
+            <span class="bg-background px-2 text-muted-foreground">Or</span>
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          class="w-full gap-2"
+          onclick={handleOsuLogin}
+          disabled={loading || ssoLoading}
         >
-          <path
-            fill="currentColor"
-            d="M488 261.8C488 403.3 391.1 504 248 504 110.8 504 0 393.2 0 256S110.8 8 248 8c66.8 0 123 24.5 166.3 64.9l-67.5 64.9C258.5 52.6 94.3 116.6 94.3 256c0 86.5 69.1 156.6 153.7 156.6 98.2 0 135-70.4 140.8-106.9H248v-85.3h236.1c2.3 12.7 3.9 24.9 3.9 41.4z"
-          ></path>
-        </svg>
-        Sign in with Google
-      </Button>
-    </CardFooter>
+          <svg
+            class="h-4 w-4"
+            viewBox="0 0 32 32"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+          >
+            <rect width="32" height="32" rx="4" fill="#DC4405" />
+            <text x="16" y="22" text-anchor="middle" fill="white" font-size="14" font-weight="bold" font-family="serif">O</text>
+          </svg>
+          {ssoLoading ? "Redirecting..." : "Sign in with Oregon State University"}
+        </Button>
+      </CardFooter>
+    </form>
   </Card>
 </div>
