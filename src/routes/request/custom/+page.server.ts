@@ -24,6 +24,7 @@ export const actions: Actions = {
     const itemNamesRaw = formData.getAll("itemName") as string[];
     const itemQuantitiesRaw = formData.getAll("itemQuantity") as string[];
     const itemPricesRaw = formData.getAll("itemPrice") as string[];
+    const itemUrlsRaw = formData.getAll("itemUrl") as string[];
 
     if (!reason) {
       return fail(400, { message: "Reason is required." });
@@ -35,10 +36,26 @@ export const actions: Actions = {
       return fail(400, { message: "At least one hardware item is required." });
     }
 
+    // Validate URLs — only http(s) allowed
+    for (let i = 0; i < itemNamesRaw.length; i++) {
+      const rawUrl = itemUrlsRaw[i]?.trim();
+      if (rawUrl) {
+        try {
+          const u = new URL(rawUrl);
+          if (u.protocol !== "http:" && u.protocol !== "https:") {
+            return fail(400, { message: `Item ${i + 1}: URL must start with http:// or https://` });
+          }
+        } catch {
+          return fail(400, { message: `Item ${i + 1}: "${rawUrl}" is not a valid URL.` });
+        }
+      }
+    }
+
     const items = itemNamesRaw.map((name, i) => ({
       name: name.trim(),
       quantity: parseInt(itemQuantitiesRaw[i] || "1", 10),
       unit_price: itemPricesRaw[i] ? parseFloat(itemPricesRaw[i]) : null,
+      url: itemUrlsRaw[i]?.trim() || null,
     }));
 
     const { error } = await supabase.from("custom_requests").insert({

@@ -13,13 +13,13 @@
   import { Textarea } from "$lib/components/ui/textarea";
   import { Plus, Trash2 } from "@lucide/svelte";
 
-  type HardwareItem = { name: string; quantity: number; unit_price: string };
+  type HardwareItem = { name: string; quantity: number; unit_price: string; url: string };
 
-  let items = $state<HardwareItem[]>([{ name: "", quantity: 1, unit_price: "" }]);
+  let items = $state<HardwareItem[]>([{ name: "", quantity: 1, unit_price: "", url: "" }]);
   let isSubmitting = $state(false);
 
   function addItem() {
-    items = [...items, { name: "", quantity: 1, unit_price: "" }];
+    items = [...items, { name: "", quantity: 1, unit_price: "", url: "" }];
   }
 
   function removeItem(index: number) {
@@ -122,6 +122,16 @@
                 step="0.01"
                 bind:value={item.unit_price}
                 placeholder="Optional"
+              />
+            </div>
+            <div class="flex-1 grid gap-1">
+              <Label for="itemUrl-{i}">Purchase URL</Label>
+              <Input
+                id="itemUrl-{i}"
+                name="itemUrl"
+                type="url"
+                bind:value={item.url}
+                placeholder="https://... (optional)"
               />
             </div>
             {#if items.length > 1}
