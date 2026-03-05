@@ -67,14 +67,17 @@
   const { data } = $props<{ data: PageData }>();
 
   let isSheetOpen = $state(false);
-  let viewingRequest = $state<CustomRequest | null>(null);
+  let viewingRequestId = $state<string | null>(null);
+  const viewingRequest = $derived(
+    viewingRequestId ? (data.requests.find((r: CustomRequest) => r.id === viewingRequestId) ?? null) : null
+  );
   let adminNote = $state("");
   let addedItemIndices = $state(new Set<number>());
   let reviewDecision = $state("approved");
   let dangerCustomStatus = $state("");
 
   function openSheet(req: CustomRequest) {
-    viewingRequest = req;
+    viewingRequestId = req.id;
     adminNote = req.admin_note || "";
     addedItemIndices = new Set();
     reviewDecision = "approved";
@@ -216,8 +219,9 @@
                       return async ({ result }) => {
                         if (result.type === "success") {
                           addedItemIndices = new Set([...addedItemIndices, i]);
+                          await invalidateAll();
                         } else if (result.type === "failure") {
-                          alert(result.data?.message || "Failed to add to procurement.");
+                          alert((result.data as { message?: string })?.message || "Failed to add to procurement.");
                         }
                       };
                     }}
