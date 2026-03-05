@@ -26,12 +26,27 @@
     TableHeader,
     TableRow,
   } from "$lib/components/ui/table";
+  import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+  } from "$lib/components/ui/select";
+  import { Separator } from "$lib/components/ui/separator";
   import { Textarea } from "$lib/components/ui/textarea";
 
   type HardwareItem = {
     name: string;
     quantity: number;
     unit_price: number | null;
+    url?: string | null;
+  };
+
+  type ProcItem = {
+    id: string;
+    title: string;
+    status: string;
+    purchase_url: string | null;
   };
 
   type CustomRequest = {
@@ -44,6 +59,7 @@
     reviewed_at: string | null;
     created_at: string;
     user: { full_name?: string | null };
+    procItems: ProcItem[];
   };
 
   type PageData = { requests: CustomRequest[] };
@@ -53,11 +69,49 @@
   let isSheetOpen = $state(false);
   let viewingRequest = $state<CustomRequest | null>(null);
   let adminNote = $state("");
+  let addedItemIndices = $state(new Set<number>());
+  let reviewDecision = $state("reviewed");
+  let dangerOpen = $state(false);
+  let dangerCustomStatus = $state("");
 
   function openSheet(req: CustomRequest) {
     viewingRequest = req;
     adminNote = req.admin_note || "";
+    addedItemIndices = new Set();
+    reviewDecision = "reviewed";
+    dangerOpen = false;
+    dangerCustomStatus = "";
     isSheetOpen = true;
+  }
+
+  function getCustomStatusColor(status: string) {
+    switch (status) {
+      case "pending": return "bg-yellow-100 text-yellow-800";
+      case "reviewed": return "bg-blue-100 text-blue-800";
+      case "approved": return "bg-green-100 text-green-800";
+      case "refused": return "bg-red-100 text-red-800";
+      default: return "bg-gray-100 text-gray-800";
+    }
+  }
+
+  function getProcStatusColor(status: string) {
+    switch (status) {
+      case "procurement": return "bg-orange-100 text-orange-800";
+      case "purchased": return "bg-blue-100 text-blue-800";
+      case "checked_in": return "bg-green-100 text-green-800";
+      case "checked_out": return "bg-yellow-100 text-yellow-800";
+      default: return "bg-gray-100 text-gray-800";
+    }
+  }
+
+  function getProcStatusLabel(status: string) {
+    switch (status) {
+      case "procurement": return "To Purchase";
+      case "purchased": return "Purchased";
+      case "checked_in": return "Available";
+      case "checked_out": return "Checked Out";
+      default: return status;
+    }
   }
 </script>
 
@@ -94,18 +148,14 @@
                   <TableCell>{req.user?.full_name || "Unknown User"}</TableCell>
                   <TableCell>{req.items.length}</TableCell>
                   <TableCell>
-                    <Badge
-                      class={req.status === "pending"
-                        ? "bg-yellow-100 text-yellow-800"
-                        : "bg-green-100 text-green-800"}
-                    >
+                    <Badge class={getCustomStatusColor(req.status)}>
                       {req.status}
                     </Badge>
                   </TableCell>
                   <TableCell>
                     <Button
                       size="sm"
-                      variant="outline"
+                      variant={req.status === "pending" ? "default" : "outline"}
                       onclick={() => openSheet(req)}
                     >
                       {req.status === "pending" ? "Review" : "View"}
@@ -148,31 +198,87 @@
         </div>
         <div>
           <h3 class="text-sm font-semibold mb-2">Hardware items</h3>
-          <div class="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Qty</TableHead>
-                  <TableHead>Unit Price</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {#each viewingRequest.items as hw, i (i)}
-                  <TableRow>
-                    <TableCell>{hw.name}</TableCell>
-                    <TableCell>{hw.quantity}</TableCell>
-                    <TableCell>
-                      {hw.unit_price != null
-                        ? `$${hw.unit_price.toFixed(2)}`
-                        : "—"}
-                    </TableCell>
-                  </TableRow>
-                {/each}
-              </TableBody>
-            </Table>
+          <div class="space-y-2">
+            {#each viewingRequest.items as hw, i (i)}
+              <div class="rounded-md border p-3 space-y-1">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-sm font-medium">{hw.name}</span>
+                  <form
+                    method="POST"
+                    action="?/addToInventory"
+                    use:enhance={() => {
+                      return async ({ result }) => {
+                        if (result.type === "success") {
+                          addedItemIndices = new Set([...addedItemIndices, i]);
+                        } else if (result.type === "failure") {
+                          alert(result.data?.message || "Failed to add to procurement.");
+                        }
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="customRequestId" value={viewingRequest.id} />
+                    <input type="hidden" name="itemName" value={hw.name} />
+                    <input type="hidden" name="itemUrl" value={hw.url || ""} />
+                    <input type="hidden" name="itemQuantity" value={hw.quantity} />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      variant="outline"
+                      disabled={addedItemIndices.has(i)}
+                    >
+                      {addedItemIndices.has(i) ? "Added" : "Add to Procurement"}
+                    </Button>
+                  </form>
+                </div>
+                <div class="flex gap-4 text-xs text-muted-foreground">
+                  <span>Qty: {hw.quantity}</span>
+                  <span>
+                    {hw.unit_price != null ? `$${hw.unit_price.toFixed(2)} each` : "No price"}
+                  </span>
+                  {#if hw.url}
+                    <a
+                      href={hw.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="underline truncate max-w-[180px]"
+                    >
+                      {hw.url}
+                    </a>
+                  {/if}
+                </div>
+              </div>
+            {/each}
           </div>
         </div>
+
+        {#if viewingRequest.procItems.length > 0}
+          <Separator />
+          <div>
+            <h3 class="text-sm font-semibold mb-2">Procurement Items</h3>
+            <div class="space-y-1">
+              {#each viewingRequest.procItems as pi (pi.id)}
+                <div class="flex items-center justify-between py-2 border-b text-sm">
+                  <span>{pi.title}</span>
+                  <div class="flex items-center gap-2">
+                    <Badge class={getProcStatusColor(pi.status)}>
+                      {getProcStatusLabel(pi.status)}
+                    </Badge>
+                    {#if pi.purchase_url}
+                      <a
+                        href={pi.purchase_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="text-xs underline text-muted-foreground"
+                      >
+                        Link
+                      </a>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
 
         {#if viewingRequest.status === "pending"}
           <form
@@ -185,28 +291,42 @@
                   await invalidateAll();
                 } else if (result.type === "failure") {
                   alert(
-                    `Error: ${result.data?.message || "Failed to submit review"}`
+                    `Error: ${(result.data as { message?: string })?.message || "Failed to submit review"}`
                   );
                 }
               };
             }}
           >
-            <input
-              type="hidden"
-              name="customRequestId"
-              value={viewingRequest.id}
-            />
-            <div class="grid gap-2 mt-2">
-              <Label for="adminNote">Admin Note (optional)</Label>
-              <Textarea
-                id="adminNote"
-                name="adminNote"
-                bind:value={adminNote}
-                placeholder="Approval/refusal reasoning..."
-              />
+            <input type="hidden" name="customRequestId" value={viewingRequest.id} />
+            <input type="hidden" name="decision" value={reviewDecision} />
+            <div class="grid gap-3 mt-2">
+              <div class="grid gap-1">
+                <Label>Decision</Label>
+                <Select type="single" bind:value={reviewDecision}>
+                  <SelectTrigger>
+                    {reviewDecision === "approved" ? "Approve" : reviewDecision === "refused" ? "Refuse" : "Mark as Reviewed"}
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="reviewed" label="Mark as Reviewed">Mark as Reviewed</SelectItem>
+                    <SelectItem value="approved" label="Approve">Approve</SelectItem>
+                    <SelectItem value="refused" label="Refuse">Refuse</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div class="grid gap-1">
+                <Label for="adminNote">Admin Note (optional)</Label>
+                <Textarea
+                  id="adminNote"
+                  name="adminNote"
+                  bind:value={adminNote}
+                  placeholder="Approval/refusal reasoning..."
+                />
+              </div>
             </div>
             <SheetFooter class="mt-4">
-              <Button type="submit">Mark as Reviewed</Button>
+              <Button type="submit">
+                {reviewDecision === "approved" ? "Approve Request" : reviewDecision === "refused" ? "Refuse Request" : "Mark as Reviewed"}
+              </Button>
             </SheetFooter>
           </form>
         {:else}
@@ -225,6 +345,65 @@
               : "N/A"}
           </p>
         {/if}
+
+        <!-- Danger Zone -->
+        <div class="mt-6">
+          <Button
+            variant="ghost"
+            size="sm"
+            class="text-destructive hover:text-destructive hover:bg-destructive/10 w-full justify-start"
+            onclick={() => { dangerOpen = !dangerOpen; }}
+          >
+            ⚠ Danger Zone
+          </Button>
+          {#if dangerOpen}
+            <div class="mt-2 border border-destructive/50 rounded-md p-4 space-y-3">
+              <p class="text-sm text-muted-foreground">
+                Forcefully override this request's status.
+              </p>
+              <form
+                method="POST"
+                action="?/forceCustomStatus"
+                use:enhance={() => {
+                  return async ({ result }) => {
+                    if (result.type === "success") {
+                      isSheetOpen = false;
+                      dangerOpen = false;
+                      await invalidateAll();
+                    } else if (result.type === "failure") {
+                      alert((result.data as { message?: string })?.message || "Failed to update status.");
+                    }
+                  };
+                }}
+              >
+                <input type="hidden" name="customRequestId" value={viewingRequest.id} />
+                <input type="hidden" name="newStatus" value={dangerCustomStatus} />
+                <div class="grid gap-2">
+                  <Label>Force Status To</Label>
+                  <Select type="single" bind:value={dangerCustomStatus}>
+                    <SelectTrigger>
+                      {dangerCustomStatus || "Select a status..."}
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pending" label="Pending">Pending</SelectItem>
+                      <SelectItem value="reviewed" label="Reviewed">Reviewed</SelectItem>
+                      <SelectItem value="approved" label="Approved">Approved</SelectItem>
+                      <SelectItem value="refused" label="Refused">Refused</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  type="submit"
+                  variant="destructive"
+                  class="mt-3 w-full"
+                  disabled={!dangerCustomStatus}
+                >
+                  Force Status Update
+                </Button>
+              </form>
+            </div>
+          {/if}
+        </div>
       </div>
     {/if}
   </SheetContent>
