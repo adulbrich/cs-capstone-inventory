@@ -9,7 +9,7 @@ export const load: PageServerLoad = async ({
   const { data: items, error: itemsError } = await supabase
     .from("items")
     .select("*")
-    .neq("status", "retired")
+    .not("status", "in", '("retired","procurement","purchased")')
     .order("title", { ascending: true });
 
   if (itemsError) {
