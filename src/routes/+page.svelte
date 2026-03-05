@@ -28,6 +28,14 @@
     SheetHeader,
     SheetTitle,
   } from "$lib/components/ui/sheet";
+  import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+  } from "$lib/components/ui/table";
   import { getContext } from "svelte";
 
   type CartItem = { id: string; title: string };
@@ -60,10 +68,19 @@
     checkout_request_items: CartRequestItem[];
   };
 
+  type CustomRequest = {
+    id: string;
+    status: string;
+    created_at: string;
+    items: { name: string; quantity: number }[];
+    reason: string;
+  };
+
   type PageData = {
     items: Item[];
     userCartRequests: CartRequest[];
     hasPendingCart: boolean;
+    userCustomRequests: CustomRequest[];
     session: { user: { id: string } } | null;
   };
 
@@ -74,10 +91,24 @@
   let statusFilter = $state("all");
   let isCartOpen = $state(false);
   let isSubmitting = $state(false);
+  let isRequestDetailOpen = $state(false);
+  let viewingCartRequest = $state<CartRequest | null>(null);
+
+  function openRequestDetail(req: CartRequest) {
+    viewingCartRequest = req;
+    isRequestDetailOpen = true;
+  }
 
   const session = $derived(data.session);
-  const userCartRequests = $derived(data.userCartRequests || []);
   const hasPendingCart = $derived(data.hasPendingCart);
+
+  const userCartRequests = $derived(
+    [...(data.userCartRequests || [])].sort((a, b) => {
+      const da = getCartDerivedStatus(a);
+      const db = getCartDerivedStatus(b);
+      return (STATUS_SORT[da] ?? 99) - (STATUS_SORT[db] ?? 99);
+    })
+  );
 
   const filteredItems = $derived(
     data.items.filter((item: Item) => {
@@ -111,12 +142,53 @@
     }
   }
 
-  function getCartRequestStatusColor(status: string) {
-    switch (status) {
+  const STATUS_SORT: Record<string, number> = {
+    pending: 0,
+    picked_up: 1,
+    approved: 2,
+    partial: 3,
+    refused: 4,
+    returned: 5,
+    cancelled: 6,
+  };
+
+  function getCartDerivedStatus(req: CartRequest) {
+    if (req.status === "pending") return "pending";
+    if (req.status === "cancelled") return "cancelled";
+    if (req.status === "returned") return "returned";
+    if (req.status === "picked_up") return "picked_up";
+    // For "reviewed": derive from item decisions
+    const items = req.checkout_request_items;
+    const approved = items.filter((i) => i.status === "approved").length;
+    const refused = items.filter((i) => i.status === "refused").length;
+    if (approved === items.length) return "approved";
+    if (refused === items.length) return "refused";
+    return "partial";
+  }
+
+  function getCartRequestStatusColor(derived: string) {
+    switch (derived) {
       case "pending": return "bg-yellow-100 text-yellow-800";
-      case "reviewed": return "bg-blue-100 text-blue-800";
+      case "picked_up": return "bg-blue-100 text-blue-800";
+      case "approved": return "bg-green-100 text-green-800";
+      case "partial": return "bg-orange-100 text-orange-800";
+      case "refused": return "bg-red-100 text-red-800";
+      case "returned": return "bg-purple-100 text-purple-800";
       case "cancelled": return "bg-gray-100 text-gray-800";
       default: return "";
+    }
+  }
+
+  function getCartRequestStatusLabel(derived: string) {
+    switch (derived) {
+      case "pending": return "Pending";
+      case "picked_up": return "Picked Up";
+      case "approved": return "Approved";
+      case "partial": return "Partially Approved";
+      case "refused": return "Refused";
+      case "returned": return "Returned";
+      case "cancelled": return "Cancelled";
+      default: return derived;
     }
   }
 
@@ -131,6 +203,18 @@
   function isInCart(itemId: string) {
     return cart.items.some((i) => i.id === itemId);
   }
+
+  function getCustomRequestStatusColor(status: string) {
+    switch (status) {
+      case "pending": return "bg-yellow-100 text-yellow-800";
+      case "reviewed": return "bg-blue-100 text-blue-800";
+      case "approved": return "bg-green-100 text-green-800";
+      case "refused": return "bg-red-100 text-red-800";
+      default: return "bg-gray-100 text-gray-800";
+    }
+  }
+
+  const userCustomRequests = $derived(data.userCustomRequests || []);
 </script>
 
 <div class="space-y-8 pb-24">
@@ -176,74 +260,110 @@
   </div>
 
   {#if session && userCartRequests.length > 0}
-    <div class="space-y-4">
+    <div class="space-y-3">
       <h2 class="text-xl font-semibold tracking-tight">My Requests</h2>
-      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {#each userCartRequests as req (req.id)}
-          <Card>
-            <CardHeader class="pb-2">
-              <div class="flex justify-between items-start">
-                <CardTitle class="text-base">
-                  Cart Request — {req.checkout_request_items.length} item{req.checkout_request_items.length !== 1 ? "s" : ""}
-                </CardTitle>
-                <Badge class={getCartRequestStatusColor(req.status)}>
-                  {req.status}
-                </Badge>
-              </div>
-              <CardDescription class="text-xs">
-                Submitted {new Date(req.created_at).toLocaleDateString()}
-              </CardDescription>
-            </CardHeader>
-            <CardContent class="pb-2">
-              <div class="space-y-1">
-                {#each req.checkout_request_items as cartItem (cartItem.id)}
-                  <div class="flex justify-between items-center text-sm">
-                    <span class="text-muted-foreground">
-                      {cartItem.item?.title ?? "Item removed"}
-                    </span>
-                    {#if req.status === "reviewed"}
-                      <Badge class={getItemDecisionColor(cartItem.status)}>
-                        {cartItem.status}
-                      </Badge>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-              {#if req.admin_note}
-                <p class="text-xs text-muted-foreground mt-2 italic">
-                  Note: {req.admin_note}
-                </p>
-              {/if}
-            </CardContent>
-            <CardFooter class="pt-2">
-              {#if req.status === "pending"}
-                <form
-                  action="?/cancelCart"
-                  method="POST"
-                  use:enhance
-                  class="w-full"
-                >
-                  <input type="hidden" name="cartRequestId" value={req.id} />
+      <div class="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Date</TableHead>
+              <TableHead># Items</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {#each userCartRequests as req (req.id)}
+              {@const derived = getCartDerivedStatus(req)}
+              <TableRow>
+                <TableCell class="text-sm text-muted-foreground whitespace-nowrap">
+                  {new Date(req.created_at).toLocaleDateString()}
+                </TableCell>
+                <TableCell>
+                  {req.checkout_request_items.length}
+                </TableCell>
+                <TableCell>
+                  <Badge class={getCartRequestStatusColor(derived)}>
+                    {getCartRequestStatusLabel(derived)}
+                  </Badge>
+                </TableCell>
+                <TableCell class="flex gap-2 items-center">
                   <Button
-                    variant="outline"
                     size="sm"
-                    class="w-full text-red-500 hover:text-red-600"
-                    type="submit"
+                    variant="outline"
+                    onclick={() => openRequestDetail(req)}
                   >
-                    Cancel Request
+                    View
                   </Button>
-                </form>
-              {:else}
-                <div class="text-sm text-muted-foreground w-full text-center">
-                  {req.status === "cancelled" ? "Request cancelled." : "Review complete."}
-                </div>
-              {/if}
-            </CardFooter>
-          </Card>
-        {/each}
+                  {#if req.status === "pending"}
+                    <form action="?/cancelCart" method="POST" use:enhance>
+                      <input type="hidden" name="cartRequestId" value={req.id} />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        class="text-red-500 hover:text-red-600"
+                        type="submit"
+                      >
+                        Cancel
+                      </Button>
+                    </form>
+                  {/if}
+                </TableCell>
+              </TableRow>
+            {/each}
+          </TableBody>
+        </Table>
       </div>
     </div>
     <Separator />
+  {/if}
+
+  {#if session && userCustomRequests.length > 0}
+    <div class="space-y-3">
+      <h2 class="text-xl font-semibold tracking-tight">My Custom Requests</h2>
+      <div class="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Date</TableHead>
+              <TableHead># Items</TableHead>
+              <TableHead>Reason</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {#each userCustomRequests as req (req.id)}
+              <TableRow>
+                <TableCell class="text-sm text-muted-foreground whitespace-nowrap">
+                  {new Date(req.created_at).toLocaleDateString()}
+                </TableCell>
+                <TableCell>
+                  {req.items?.length ?? 0}
+                </TableCell>
+                <TableCell class="max-w-[200px] truncate text-sm text-muted-foreground">
+                  {req.reason}
+                </TableCell>
+                <TableCell>
+                  <Badge class={getCustomRequestStatusColor(req.status)}>
+                    {req.status}
+                  </Badge>
+                </TableCell>
+              </TableRow>
+            {/each}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+    <Separator />
+  {/if}
+
+  {#if session}
+    <p class="text-sm text-muted-foreground">
+      Can't find what you need?
+      <a href="/request/custom" class="underline font-medium">
+        Submit a custom request →
+      </a>
+    </p>
   {/if}
 
   <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -315,15 +435,6 @@
       </Button>
     </div>
   {/if}
-
-  {#if session}
-    <p class="text-center text-sm text-muted-foreground">
-      Can't find what you need?
-      <a href="/request/custom" class="underline font-medium">
-        Submit a custom request →
-      </a>
-    </p>
-  {/if}
 </div>
 
 <!-- Sticky Cart Bar -->
@@ -338,6 +449,48 @@
     <Button onclick={() => (isCartOpen = true)}>Review Cart</Button>
   </div>
 {/if}
+
+<!-- Request Detail Sheet -->
+<Sheet bind:open={isRequestDetailOpen}>
+  <SheetContent class="overflow-y-auto p-6">
+    <SheetHeader class="p-0">
+      <SheetTitle>Request Details</SheetTitle>
+      <SheetDescription>
+        Submitted {viewingCartRequest ? new Date(viewingCartRequest.created_at).toLocaleDateString() : ""}
+        — {viewingCartRequest ? getCartRequestStatusLabel(getCartDerivedStatus(viewingCartRequest)) : ""}
+      </SheetDescription>
+    </SheetHeader>
+    {#if viewingCartRequest}
+      <div class="py-4 space-y-4">
+        <div class="space-y-2">
+          {#each viewingCartRequest.checkout_request_items as cartItem (cartItem.id)}
+            <div class="flex items-center justify-between py-2 border-b text-sm">
+              <span>{cartItem.item?.title ?? "Item removed"}</span>
+              {#if viewingCartRequest.status !== "pending" && viewingCartRequest.status !== "cancelled"}
+                <Badge class={getItemDecisionColor(cartItem.status)}>
+                  {cartItem.status}
+                </Badge>
+              {/if}
+            </div>
+          {/each}
+        </div>
+        {#if viewingCartRequest.admin_note}
+          <div>
+            <p class="text-sm font-semibold mb-1">Note from admin</p>
+            <p class="text-sm text-muted-foreground italic">{viewingCartRequest.admin_note}</p>
+          </div>
+        {/if}
+        {#if viewingCartRequest.status === "cancelled"}
+          <p class="text-sm text-muted-foreground">This request was cancelled.</p>
+        {:else if viewingCartRequest.status === "returned"}
+          <p class="text-sm text-muted-foreground">Items have been returned.</p>
+        {:else if viewingCartRequest.status === "picked_up"}
+          <p class="text-sm text-muted-foreground">Items are checked out.</p>
+        {/if}
+      </div>
+    {/if}
+  </SheetContent>
+</Sheet>
 
 <!-- Cart Sheet -->
 <Sheet bind:open={isCartOpen}>

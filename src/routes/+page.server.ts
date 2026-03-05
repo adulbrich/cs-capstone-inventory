@@ -18,6 +18,7 @@ export const load: PageServerLoad = async ({
 
   let userCartRequests: Record<string, unknown>[] = [];
   let hasPendingCart = false;
+  let userCustomRequests: Record<string, unknown>[] = [];
   if (session) {
     const { data: cartRequests, error: cartError } = await supabase
       .from("checkout_requests")
@@ -33,12 +34,25 @@ export const load: PageServerLoad = async ({
       userCartRequests = cartRequests || [];
       hasPendingCart = (cartRequests || []).some((r) => r.status === "pending");
     }
+
+    const { data: customRequests, error: customError } = await supabase
+      .from("custom_requests")
+      .select("id, status, created_at, items, reason")
+      .eq("user_id", session.user.id)
+      .order("created_at", { ascending: false });
+
+    if (customError) {
+      console.error("Error fetching custom requests:", customError);
+    } else {
+      userCustomRequests = customRequests || [];
+    }
   }
 
   return {
     items: items || [],
     userCartRequests,
     hasPendingCart,
+    userCustomRequests,
     session,
   };
 };
