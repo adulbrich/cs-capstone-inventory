@@ -14,38 +14,51 @@ export const load: PageServerLoad = async ({
     console.error("Error fetching items:", itemsError);
   }
 
-  // Fetch all checkout_requests with their items
-  const { data: cartRequestsRaw, error: cartRequestsError } = await supabase
+  // Pending counts for summary blocks
+  const { count: pendingCartCount } = await supabase
     .from("checkout_requests")
-    .select(
-      "id, user_id, status, admin_note, reviewed_at, created_at, checkout_request_items(id, status, item:items(id, title))"
-    )
-    .order("created_at", { ascending: false });
+    .select("*", { count: "exact", head: true })
+    .eq("status", "pending");
 
-  if (cartRequestsError) {
-    console.error("Error fetching cart requests:", cartRequestsError);
-  }
+  const { count: pendingCustomCount } = await supabase
+    .from("custom_requests")
+    .select("*", { count: "exact", head: true })
+    .eq("status", "pending");
 
-  // Fetch profiles for cart request users
-  const cartUserIds = [
-    ...new Set((cartRequestsRaw || []).map((r) => r.user_id)),
-  ];
-  let cartProfilesById: Record<string, { full_name: string | null }> = {};
-  if (cartUserIds.length > 0) {
-    const { data: cartProfiles } = await supabase
-      .from("profiles")
-      .select("id, full_name")
-      .in("id", cartUserIds);
-    if (cartProfiles) {
-      cartProfilesById = Object.fromEntries(
-        cartProfiles.map((p) => [p.id, { full_name: p.full_name }])
+  // Find who requested each item currently in "requested" status
+  const requestedItemIds = (items || [])
+    .filter((i) => i.status === "requested")
+    .map((i) => i.id);
+  let requestedByMap: Record<string, string | null> = {};
+  if (requestedItemIds.length > 0) {
+    const { data: pendingCartItems } = await supabase
+      .from("checkout_request_items")
+      .select("item_id, checkout_requests!inner(user_id, status)")
+      .in("item_id", requestedItemIds)
+      .eq("status", "pending");
+    const itemToUserId: Record<string, string> = {};
+    for (const ci of (pendingCartItems as any[]) || []) {
+      if (ci.checkout_requests?.status === "pending") {
+        itemToUserId[ci.item_id] = ci.checkout_requests.user_id;
+      }
+    }
+    const requesterIds = [...new Set(Object.values(itemToUserId))];
+    if (requesterIds.length > 0) {
+      const { data: requesterProfiles } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .in("id", requesterIds);
+      const profileNames = Object.fromEntries(
+        (requesterProfiles || []).map((p) => [p.id, p.full_name])
       );
+      for (const [itemId, userId] of Object.entries(itemToUserId)) {
+        requestedByMap[itemId] = profileNames[userId] ?? null;
+      }
     }
   }
-
-  const cartRequests = (cartRequestsRaw || []).map((req) => ({
-    ...req,
-    user: cartProfilesById[req.user_id] ?? {},
+  const enrichedItems = (items || []).map((item) => ({
+    ...item,
+    requested_by: requestedByMap[item.id] ?? null,
   }));
 
   // Calculate statistics
@@ -54,9 +67,6 @@ export const load: PageServerLoad = async ({
     items?.filter((item) => item.status === "checked_out").length || 0;
   const retired =
     items?.filter((item) => item.status === "retired").length || 0;
-  const pendingRequests = (cartRequestsRaw || []).filter(
-    (req) => req.status === "pending"
-  ).length;
 
   const { count: activeUsers } = await supabase
     .from("profiles")
@@ -94,15 +104,23 @@ export const load: PageServerLoad = async ({
     user: txProfilesById[t.user_id] ?? {},
   }));
 
+  // Procurement pipeline: items sourced from custom requests not yet available
+  const { data: procurementItems } = await supabase
+    .from("items")
+    .select("id, title, status, purchase_url, created_at")
+    .in("status", ["procurement", "purchased"])
+    .order("created_at", { ascending: false });
+
   return {
-    items: items || [],
-    cartRequests,
+    items: enrichedItems,
+    procurementItems: procurementItems || [],
     auditLog,
+    pendingCartCount: pendingCartCount ?? 0,
+    pendingCustomCount: pendingCustomCount ?? 0,
     stats: {
       totalItems,
       checkedOut,
       retired,
-      pendingRequests,
       activeUsers: activeUsers ?? 0,
     },
   };
@@ -183,6 +201,20 @@ export const actions = {
 
     const formData = await event.request.formData();
     const id = formData.get("id") as string;
+
+    // Block edits while a checkout request is pending for this item
+    const { data: currentItem } = await event.locals.supabase
+      .from("items")
+      .select("status")
+      .eq("id", id)
+      .single();
+    if (currentItem?.status === "requested") {
+      return fail(400, {
+        error:
+          "This item has a pending checkout request and cannot be edited until the request is processed.",
+      });
+    }
+
     const title = formData.get("title") as string;
     const description = formData.get("description") as string;
     const location = formData.get("location") as string;
@@ -263,122 +295,94 @@ export const actions = {
     return { success: true };
   },
 
-  reviewCart: async ({ request, locals: { supabase, safeGetSession } }) => {
+  bulkUpdate: async ({ request, locals: { supabase, safeGetSession } }) => {
     const { session } = await safeGetSession();
-    if (!session) {
-      return fail(401, { message: "Unauthorized" });
-    }
+    if (!session) return fail(401, { error: "Unauthorized" });
 
-    const { data: reviewerProfile } = await supabase
+    const { data: profile } = await supabase
       .from("profiles")
       .select("role")
       .eq("id", session.user.id)
       .single();
-    if (!reviewerProfile || !["admin", "instructor"].includes(reviewerProfile.role)) {
+    if (!profile || !["admin", "instructor"].includes(profile.role)) {
       return fail(403, { error: "Forbidden" });
     }
 
     const formData = await request.formData();
-    const cartRequestId = formData.get("cartRequestId") as string;
-    const adminNote = (formData.get("adminNote") as string)?.trim() || null;
-    // decisions format: "checkoutItemId:approved" or "checkoutItemId:refused"
-    const decisions = formData.getAll("decision") as string[];
+    const ids = formData.getAll("selectedId") as string[];
+    if (ids.length === 0) return fail(400, { error: "No items selected." });
 
-    if (!cartRequestId) {
-      return fail(400, { message: "Cart request ID is required." });
-    }
+    const rawStatus = (formData.get("status") as string)?.trim();
+    const location = (formData.get("location") as string)?.trim();
+    const tagsRaw = (formData.get("tags") as string)?.trim();
+    const checked_out_to = (formData.get("checked_out_to") as string)?.trim();
 
-    // Fetch cart items to process
-    const { data: cartItems, error: fetchError } = await supabase
-      .from("checkout_request_items")
-      .select("id, item_id")
-      .eq("checkout_request_id", cartRequestId);
+    const status = rawStatus === "available" ? "checked_in" : rawStatus;
 
-    if (fetchError || !cartItems) {
-      return fail(404, { message: "Cart request not found." });
-    }
-
-    // Parse decisions map: checkoutItemId → "approved" | "refused"
-    const decisionMap = new Map<string, string>();
-    for (const d of decisions) {
-      const [id, status] = d.split(":");
-      if (id && (status === "approved" || status === "refused")) {
-        decisionMap.set(id, status);
-      }
-    }
-
-    // Get the requesting user's name for checked_out_to
-    const { data: cartRequest } = await supabase
-      .from("checkout_requests")
-      .select("user_id")
-      .eq("id", cartRequestId)
-      .single();
-
-    let checkedOutToName = "Student";
-    if (cartRequest?.user_id) {
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("full_name")
-        .eq("id", cartRequest.user_id)
-        .single();
-      checkedOutToName = profile?.full_name || "Student";
-    }
-
-    // Process each item decision
-    for (const cartItem of cartItems) {
-      const decision = decisionMap.get(cartItem.id) ?? "approved";
-
-      await supabase
-        .from("checkout_request_items")
-        .update({ status: decision })
-        .eq("id", cartItem.id);
-
-      if (!cartItem.item_id) continue;
-
-      if (decision === "approved") {
-        await supabase
-          .from("items")
-          .update({ status: "checked_out", checked_out_to: checkedOutToName })
-          .eq("id", cartItem.item_id);
-
-        const { error: txError } = await supabase.from("transactions").insert({
-          item_id: cartItem.item_id,
-          user_id: session.user.id,
-          action: "check_out",
-          notes: `Approved for ${checkedOutToName}`,
-        });
-        if (txError) console.error("Failed to log transaction:", txError);
+    const updates: Record<string, unknown> = {};
+    if (status) {
+      updates.status = status;
+      if (status === "checked_out") {
+        if (!checked_out_to) return fail(400, { error: "Checked Out To is required when status is Checked Out." });
+        updates.checked_out_to = checked_out_to;
       } else {
-        await supabase
-          .from("items")
-          .update({ status: "checked_in" })
-          .eq("id", cartItem.item_id);
-
-        const { error: txError } = await supabase.from("transactions").insert({
-          item_id: cartItem.item_id,
-          user_id: session.user.id,
-          action: "check_in",
-          notes: "Refused in cart review",
-        });
-        if (txError) console.error("Failed to log transaction:", txError);
+        updates.checked_out_to = null;
       }
     }
-
-    // Mark checkout_request as reviewed
-    const { error: reviewError } = await supabase
-      .from("checkout_requests")
-      .update({
-        status: "reviewed",
-        admin_note: adminNote,
-        reviewed_by: session.user.id,
-        reviewed_at: new Date().toISOString(),
-      })
-      .eq("id", cartRequestId);
-
-    if (reviewError) {
-      return fail(500, { message: "Failed to mark request as reviewed." });
+    if (location) updates.location = location;
+    if (tagsRaw) {
+      updates.tags = tagsRaw.split(",").map((t) => t.trim()).filter(Boolean);
     }
+
+    if (Object.keys(updates).length === 0) {
+      return fail(400, { error: "No changes specified." });
+    }
+
+    const { error } = await supabase.from("items").update(updates).in("id", ids);
+    if (error) return fail(500, { error: "Failed to update items." });
+
+    await supabase.from("transactions").insert({
+      user_id: session.user.id,
+      action: "note_added",
+      notes: `Bulk updated ${ids.length} item(s): ${JSON.stringify(updates)}`,
+    });
 
     return { success: true };
   },
+
+  markPurchased: async ({ request, locals: { supabase, safeGetSession } }) => {
+    const { session } = await safeGetSession();
+    if (!session) return fail(401, { error: "Unauthorized" });
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", session.user.id)
+      .single();
+    if (!profile || !["admin", "instructor"].includes(profile.role)) {
+      return fail(403, { error: "Forbidden" });
+    }
+
+    const formData = await request.formData();
+    const id = formData.get("id") as string;
+    if (!id) return fail(400, { error: "Item ID is required." });
+
+    const { error } = await supabase
+      .from("items")
+      .update({ status: "purchased" })
+      .eq("id", id)
+      .eq("status", "procurement"); // guard: only procurement items
+
+    if (error) return fail(500, { error: "Failed to mark as purchased." });
+
+    await supabase.from("transactions").insert({
+      item_id: id,
+      user_id: session.user.id,
+      action: "note_added",
+      notes: "Marked as purchased (not yet available)",
+    });
+
+    return { success: true };
+  },
+
 } satisfies Actions;

@@ -52,23 +52,7 @@
     checked_out_to?: string;
     tags?: string[];
     created_at: string;
-  };
-
-  type CartRequestItem = {
-    id: string;
-    status: string;
-    item: { id: string; title: string } | null;
-  };
-
-  type CartRequest = {
-    id: string;
-    user_id: string;
-    status: string;
-    admin_note: string | null;
-    reviewed_at: string | null;
-    created_at: string;
-    checkout_request_items: CartRequestItem[];
-    user: { full_name?: string | null };
+    requested_by?: string | null;
   };
 
   type Transaction = {
@@ -82,15 +66,24 @@
     user: { full_name?: string | null };
   };
 
+  type ProcurementItem = {
+    id: string;
+    title: string;
+    status: string;
+    purchase_url: string | null;
+    created_at: string;
+  };
+
   type PageData = {
     items: Item[];
-    cartRequests: CartRequest[];
     auditLog: Transaction[];
+    procurementItems: ProcurementItem[];
+    pendingCartCount: number;
+    pendingCustomCount: number;
     stats: {
       totalItems: number;
       checkedOut: number;
       retired: number;
-      pendingRequests: number;
       activeUsers: number;
     };
   };
@@ -107,6 +100,13 @@
   let selectValue = $state("available");
   let checked_out_to = $state("");
   let tags = $state("");
+
+  // Bulk edit state
+  let selectedIds = $state(new Set<string>());
+  let bulkStatus = $state("");
+  let bulkCheckedOutTo = $state("");
+  let bulkLocation = $state("");
+  let bulkTags = $state("");
 
   function openAddSheet() {
     isSheetOpen = true;
@@ -134,40 +134,16 @@
 
   function getStatusLabel(status: string) {
     switch (status) {
-      case "checked_in":
-        return "Available";
-      case "checked_out":
-        return "Checked Out";
-      case "retired":
-        return "Retired";
-      default:
-        return status;
+      case "checked_in": return "Available";
+      case "checked_out": return "Checked Out";
+      case "retired": return "Retired";
+      case "requested": return "Requested";
+      case "procurement": return "Procurement";
+      case "purchased": return "Purchased";
+      default: return status;
     }
   }
 
-  let isReviewSheetOpen = $state(false);
-  let reviewingCart = $state<CartRequest | null>(null);
-  let reviewAdminNote = $state("");
-  let reviewDecisions = $state<Record<string, string>>({});
-
-  function openReviewSheet(cart: CartRequest) {
-    reviewingCart = cart;
-    reviewAdminNote = "";
-    reviewDecisions = Object.fromEntries(
-      cart.checkout_request_items.map((ci) => [ci.id, "approved"])
-    );
-    isReviewSheetOpen = true;
-  }
-
-  function getCartDerivedStatus(req: CartRequest) {
-    if (req.status === "pending") return "pending";
-    const items = req.checkout_request_items;
-    const approved = items.filter((i) => i.status === "approved").length;
-    const refused = items.filter((i) => i.status === "refused").length;
-    if (approved === items.length) return "approved";
-    if (refused === items.length) return "refused";
-    return "partial";
-  }
 </script>
 
 <div class="space-y-6">
@@ -180,52 +156,52 @@
   </div>
 
   <!-- Statistics Cards -->
-  <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-    <Card>
+  <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+    <Card class="py-3 gap-2 sm:py-6 sm:gap-6">
       <CardHeader
-        class="flex flex-row items-center justify-between space-y-0 pb-2"
+        class="flex flex-row items-center justify-between space-y-0 pb-1 sm:pb-2"
       >
         <CardTitle class="text-sm font-medium">Total Items</CardTitle>
         <Package class="h-4 w-4 text-muted-foreground"/>
       </CardHeader>
       <CardContent>
-        <div class="text-2xl font-bold">{data?.stats?.totalItems || 0}</div>
+        <div class="text-xl sm:text-2xl font-bold">{data?.stats?.totalItems || 0}</div>
         <p class="text-xs text-muted-foreground">Across all categories</p>
       </CardContent>
     </Card>
-    <Card>
+    <Card class="py-3 gap-2 sm:py-6 sm:gap-6">
       <CardHeader
-        class="flex flex-row items-center justify-between space-y-0 pb-2"
+        class="flex flex-row items-center justify-between space-y-0 pb-1 sm:pb-2"
       >
         <CardTitle class="text-sm font-medium">Checked Out</CardTitle>
         <CheckCircle2 class="h-4 w-4 text-muted-foreground"/>
       </CardHeader>
       <CardContent>
-        <div class="text-2xl font-bold">{data?.stats?.checkedOut || 0}</div>
+        <div class="text-xl sm:text-2xl font-bold">{data?.stats?.checkedOut || 0}</div>
         <p class="text-xs text-muted-foreground">Active loans</p>
       </CardContent>
     </Card>
-    <Card>
+    <Card class="py-3 gap-2 sm:py-6 sm:gap-6">
       <CardHeader
-        class="flex flex-row items-center justify-between space-y-0 pb-2"
+        class="flex flex-row items-center justify-between space-y-0 pb-1 sm:pb-2"
       >
         <CardTitle class="text-sm font-medium">Retired Items</CardTitle>
         <AlertCircle class="h-4 w-4 text-muted-foreground"/>
       </CardHeader>
       <CardContent>
-        <div class="text-2xl font-bold">{data?.stats?.retired || 0}</div>
+        <div class="text-xl sm:text-2xl font-bold">{data?.stats?.retired || 0}</div>
         <p class="text-xs text-muted-foreground">Out of circulation</p>
       </CardContent>
     </Card>
-    <Card>
+    <Card class="py-3 gap-2 sm:py-6 sm:gap-6">
       <CardHeader
-        class="flex flex-row items-center justify-between space-y-0 pb-2"
+        class="flex flex-row items-center justify-between space-y-0 pb-1 sm:pb-2"
       >
         <CardTitle class="text-sm font-medium">Active Users</CardTitle>
         <Users class="h-4 w-4 text-muted-foreground"/>
       </CardHeader>
       <CardContent>
-        <div class="text-2xl font-bold">
+        <div class="text-xl sm:text-2xl font-bold">
           {data?.stats?.activeUsers || "N/A"}
         </div>
         <p class="text-xs text-muted-foreground">Students & Instructors</p>
@@ -233,53 +209,99 @@
     </Card>
   </div>
 
-  <!-- Cart Requests Table -->
-  {#if data?.cartRequests && data.cartRequests.length > 0}
+  <!-- Pending Requests Summary -->
+  <div class="grid gap-2 sm:grid-cols-2">
+    <Card class="py-3 gap-2 sm:py-6 sm:gap-6">
+      <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-1 sm:pb-2">
+        <CardTitle class="text-sm font-medium">Cart Requests</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div class="text-xl sm:text-2xl font-bold">{data.pendingCartCount}</div>
+        <p class="text-xs text-muted-foreground mb-2">Pending checkout requests</p>
+        <Button variant="outline" size="sm" href="/admin/cart-requests">
+          View Cart Requests →
+        </Button>
+      </CardContent>
+    </Card>
+    <Card class="py-3 gap-2 sm:py-6 sm:gap-6">
+      <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-1 sm:pb-2">
+        <CardTitle class="text-sm font-medium">Custom Requests</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div class="text-xl sm:text-2xl font-bold">{data.pendingCustomCount}</div>
+        <p class="text-xs text-muted-foreground mb-2">Pending hardware requests</p>
+        <Button variant="outline" size="sm" href="/admin/custom-requests">
+          View Custom Requests →
+        </Button>
+      </CardContent>
+    </Card>
+  </div>
+
+  <!-- Procurement Pipeline -->
+  {#if data.procurementItems && data.procurementItems.length > 0}
     <Card>
       <CardHeader>
-        <CardTitle>Cart Requests</CardTitle>
+        <CardTitle>Procurement</CardTitle>
       </CardHeader>
       <CardContent>
         <div class="rounded-md border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>User</TableHead>
-                <TableHead># Items</TableHead>
+                <TableHead>Item</TableHead>
+                <TableHead>Purchase URL</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Added</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {#each data.cartRequests as req (req.id)}
-                {@const derived = getCartDerivedStatus(req)}
+              {#each data.procurementItems as pi (pi.id)}
                 <TableRow>
-                  <TableCell class="text-sm text-muted-foreground">
-                    {new Date(req.created_at).toLocaleDateString()}
+                  <TableCell class="font-medium">{pi.title}</TableCell>
+                  <TableCell class="max-w-[200px]">
+                    {#if pi.purchase_url}
+                      <a
+                        href={pi.purchase_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="text-sm underline truncate block"
+                      >
+                        {pi.purchase_url}
+                      </a>
+                    {:else}
+                      <span class="text-muted-foreground text-sm">—</span>
+                    {/if}
                   </TableCell>
-                  <TableCell>{req.user?.full_name || "Unknown User"}</TableCell>
-                  <TableCell>{req.checkout_request_items.length}</TableCell>
                   <TableCell>
                     <Badge
-                      class={
-                        derived === "pending" ? "bg-yellow-100 text-yellow-800" :
-                        derived === "approved" ? "bg-green-100 text-green-800" :
-                        derived === "partial" ? "bg-blue-100 text-blue-800" :
-                        "bg-red-100 text-red-800"
-                      }
+                      class={pi.status === "procurement"
+                        ? "bg-orange-100 text-orange-800"
+                        : "bg-blue-100 text-blue-800"}
                     >
-                      {derived === "pending" ? "Pending" :
-                       derived === "approved" ? "Approved" :
-                       derived === "partial" ? "Partially Approved" :
-                       "Refused"}
+                      {pi.status === "procurement" ? "To Purchase" : "Purchased"}
                     </Badge>
                   </TableCell>
+                  <TableCell class="text-sm text-muted-foreground whitespace-nowrap">
+                    {new Date(pi.created_at).toLocaleDateString()}
+                  </TableCell>
                   <TableCell>
-                    {#if req.status === "pending"}
-                      <Button size="sm" onclick={() => openReviewSheet(req)}>
-                        Review
-                      </Button>
+                    {#if pi.status === "procurement"}
+                      <form
+                        method="POST"
+                        action="?/markPurchased"
+                        use:enhance={() => {
+                          return async ({ result }) => {
+                            if (result.type === "success") await invalidateAll();
+                            else alert("Failed to update status.");
+                          };
+                        }}
+                      >
+                        <input type="hidden" name="id" value={pi.id} />
+                        <Button size="sm" variant="outline" type="submit">
+                          Mark Purchased
+                        </Button>
+                      </form>
                     {/if}
                   </TableCell>
                 </TableRow>
@@ -297,15 +319,93 @@
       <CardTitle>Inventory Items</CardTitle>
     </CardHeader>
     <CardContent>
+      {#if selectedIds.size > 0}
+        <div class="mb-4 p-4 border rounded-lg bg-muted/50 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">{selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""} selected</span>
+            <Button variant="ghost" size="sm" onclick={() => { selectedIds = new Set(); }}>Clear</Button>
+          </div>
+          <form
+            method="POST"
+            action="?/bulkUpdate"
+            use:enhance={() => {
+              return async ({ result }) => {
+                if (result.type === "success") {
+                  selectedIds = new Set();
+                  bulkStatus = "";
+                  bulkCheckedOutTo = "";
+                  bulkLocation = "";
+                  bulkTags = "";
+                  await invalidateAll();
+                } else if (result.type === "failure") {
+                  alert((result.data as { error?: string })?.error || "Bulk update failed.");
+                }
+              };
+            }}
+          >
+            {#each [...selectedIds] as id (id)}
+              <input type="hidden" name="selectedId" value={id} />
+            {/each}
+            <input type="hidden" name="status" value={bulkStatus === "available" ? "checked_in" : bulkStatus} />
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="grid gap-1">
+                <Label>Status</Label>
+                <Select type="single" bind:value={bulkStatus}>
+                  <SelectTrigger>
+                    {bulkStatus === "" ? "— no change —" : bulkStatus === "available" ? "Available" : bulkStatus === "checked_out" ? "Checked Out" : "Retired"}
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="" label="— no change —">— no change —</SelectItem>
+                    <SelectItem value="available" label="Available">Available</SelectItem>
+                    <SelectItem value="checked_out" label="Checked Out">Checked Out</SelectItem>
+                    <SelectItem value="retired" label="Retired">Retired</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {#if bulkStatus === "checked_out"}
+                <div class="grid gap-1">
+                  <Label>Checked Out To</Label>
+                  <Input name="checked_out_to" bind:value={bulkCheckedOutTo} placeholder="Name or contact info" required />
+                </div>
+              {/if}
+              <div class="grid gap-1">
+                <Label>Location</Label>
+                <Input name="location" bind:value={bulkLocation} placeholder="Leave empty to keep current" />
+              </div>
+              <div class="grid gap-1">
+                <Label>Categories</Label>
+                <Input name="tags" bind:value={bulkTags} placeholder="Leave empty to keep current" />
+              </div>
+            </div>
+            <Button type="submit" class="mt-3">
+              Apply to {selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""}
+            </Button>
+          </form>
+        </div>
+      {/if}
       <div class="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead class="w-10">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 cursor-pointer"
+                  checked={selectedIds.size === data.items.length && data.items.length > 0}
+                  onchange={(e) => {
+                    if ((e.target as HTMLInputElement).checked) {
+                      selectedIds = new Set(data.items.map((i: Item) => i.id));
+                    } else {
+                      selectedIds = new Set();
+                    }
+                  }}
+                />
+              </TableHead>
               <TableHead>Title</TableHead>
-              <TableHead>Tag Label</TableHead>
+              <TableHead>Asset Tag</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Location</TableHead>
-              <TableHead>Tags</TableHead>
+              <TableHead>Categories</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -314,13 +414,26 @@
                 class="cursor-pointer hover:bg-muted/50"
                 onclick={() => openEditSheet(item)}
               >
+                <TableCell onclick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 cursor-pointer"
+                    checked={selectedIds.has(item.id)}
+                    onchange={() => {
+                      if (selectedIds.has(item.id)) {
+                        selectedIds = new Set([...selectedIds].filter((id) => id !== item.id));
+                      } else {
+                        selectedIds = new Set([...selectedIds, item.id]);
+                      }
+                    }}
+                  />
+                </TableCell>
                 <TableCell class="font-medium">{item.title}</TableCell>
                 <TableCell>{item.tag_label || "-"}</TableCell>
                 <TableCell>
                   <Badge
-                    variant={item.status === "checked_in"
-                      ? "default"
-                      : "secondary"}
+                    variant={item.status === "checked_in" ? "default" : "secondary"}
+                    class={item.status === "requested" ? "bg-blue-100 text-blue-800" : ""}
                   >
                     {getStatusLabel(item.status)}
                   </Badge>
@@ -421,12 +534,12 @@
           <Input id="title" name="title" bind:value={title} required/>
         </div>
         <div class="grid gap-2">
-          <Label for="tag_label">Tag Label</Label>
+          <Label for="tag_label">Asset Tag</Label>
           <Input
             id="tag_label"
             name="tag_label"
             bind:value={tag_label}
-            placeholder="Optional"
+            placeholder="e.g. RPi-001 (optional)"
           />
         </div>
         <div class="grid gap-2">
@@ -443,31 +556,45 @@
         </div>
         <div class="grid gap-2">
           <Label for="status">Status</Label>
-          <input
-            type="hidden"
-            name="status"
-            value={selectValue === "available" ? "checked_in" : selectValue}
-          >
-          <Select type="single" bind:value={selectValue}>
-            <SelectTrigger>
-              {selectValue === "available"
-                ? "Available"
-                : selectValue === "checked_out"
-                  ? "Checked Out"
-                  : "Retired"}
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="available" label="Available">
-                Available
-              </SelectItem>
-              <SelectItem value="checked_out" label="Checked Out">
-                Checked Out
-              </SelectItem>
-              <SelectItem value="retired" label="Retired">Retired</SelectItem>
-            </SelectContent>
-          </Select>
+          {#if editingItem?.status === "requested"}
+            <div class="flex items-center gap-2 py-1">
+              <Badge class="bg-blue-100 text-blue-800">Requested</Badge>
+              <span class="text-sm text-muted-foreground">
+                by {editingItem.requested_by ?? "Unknown"}
+              </span>
+            </div>
+            <p class="text-xs text-muted-foreground">
+              Cannot edit while a checkout request is pending.
+            </p>
+          {:else}
+            <input
+              type="hidden"
+              name="status"
+              value={selectValue === "available" ? "checked_in" : selectValue}
+            >
+            <Select type="single" bind:value={selectValue}>
+              <SelectTrigger>
+                {selectValue === "available"
+                  ? "Available"
+                  : selectValue === "checked_out"
+                    ? "Checked Out"
+                    : selectValue === "procurement"
+                      ? "Procurement"
+                      : selectValue === "purchased"
+                        ? "Purchased"
+                        : "Retired"}
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="available" label="Available">Available</SelectItem>
+                <SelectItem value="checked_out" label="Checked Out">Checked Out</SelectItem>
+                <SelectItem value="retired" label="Retired">Retired</SelectItem>
+                <SelectItem value="procurement" label="Procurement">Procurement</SelectItem>
+                <SelectItem value="purchased" label="Purchased">Purchased</SelectItem>
+              </SelectContent>
+            </Select>
+          {/if}
         </div>
-        {#if selectValue === "checked_out"}
+        {#if selectValue === "checked_out" && editingItem?.status !== "requested"}
           <div class="grid gap-2">
             <Label for="checked_out_to">Checked Out To</Label>
             <Input
@@ -480,97 +607,22 @@
           </div>
         {/if}
         <div class="grid gap-2">
-          <Label for="tags">Tags</Label>
+          <Label for="tags">Categories</Label>
           <Input
             id="tags"
             name="tags"
             bind:value={tags}
-            placeholder="Comma separated"
+            placeholder="Comma separated, e.g. electronics, microcontroller"
           />
         </div>
       </div>
 
       <SheetFooter>
-        <Button type="submit">Save changes</Button>
+        <Button type="submit" disabled={editingItem?.status === "requested"}>
+          Save changes
+        </Button>
       </SheetFooter>
     </form>
   </SheetContent>
 </Sheet>
 
-<!-- Cart Review Sheet -->
-<Sheet bind:open={isReviewSheetOpen}>
-  <SheetContent class="overflow-y-auto p-6">
-    <SheetHeader class="p-0">
-      <SheetTitle>Review Cart Request</SheetTitle>
-      <SheetDescription>
-        {reviewingCart?.user?.full_name || "Student"} — submitted {reviewingCart ? new Date(reviewingCart.created_at).toLocaleDateString() : ""}
-      </SheetDescription>
-    </SheetHeader>
-
-    {#if reviewingCart}
-      <form
-        method="POST"
-        action="?/reviewCart"
-        use:enhance={() => {
-          return async ({ result }) => {
-            if (result.type === "success") {
-              isReviewSheetOpen = false;
-              await invalidateAll();
-            } else if (result.type === "failure") {
-              alert(`Error: ${result.data?.message || "Failed to submit review"}`);
-            }
-          };
-        }}
-      >
-        <input type="hidden" name="cartRequestId" value={reviewingCart.id} />
-        <div class="py-4 space-y-4">
-          <div>
-            <h3 class="text-sm font-semibold mb-2">Items</h3>
-            <div class="space-y-2">
-              {#each reviewingCart.checkout_request_items as cartItem (cartItem.id)}
-                <div class="flex items-center justify-between py-2 border-b">
-                  <span class="text-sm">{cartItem.item?.title ?? "Item removed"}</span>
-                  <div class="flex gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={reviewDecisions[cartItem.id] === "approved" ? "default" : "outline"}
-                      onclick={() => (reviewDecisions[cartItem.id] = "approved")}
-                    >
-                      Approve
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={reviewDecisions[cartItem.id] === "refused" ? "destructive" : "outline"}
-                      onclick={() => (reviewDecisions[cartItem.id] = "refused")}
-                    >
-                      Refuse
-                    </Button>
-                    <input
-                      type="hidden"
-                      name="decision"
-                      value="{cartItem.id}:{reviewDecisions[cartItem.id] ?? 'approved'}"
-                    />
-                  </div>
-                </div>
-              {/each}
-            </div>
-          </div>
-          <div class="grid gap-2">
-            <Label for="adminNote">Admin Note (optional)</Label>
-            <Textarea
-              id="adminNote"
-              name="adminNote"
-              bind:value={reviewAdminNote}
-              placeholder="Add a note for the student..."
-            />
-          </div>
-        </div>
-        <SheetFooter>
-          <Button type="submit">Submit Review</Button>
-        </SheetFooter>
-      </form>
-    {/if}
-  </SheetContent>
-</Sheet>
