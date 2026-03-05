@@ -88,7 +88,11 @@ export const actions: Actions = {
       return fail(400, { message: "Request ID is required." });
     }
 
-    const status = decision === "approved" || decision === "refused" ? decision : "reviewed";
+    if (decision !== "approved" && decision !== "refused") {
+      return fail(400, { message: "Decision must be 'approved' or 'refused'." });
+    }
+
+    const status = decision;
 
     const { error } = await supabase
       .from("custom_requests")
@@ -171,7 +175,7 @@ export const actions: Actions = {
     const formData = await request.formData();
     const customRequestId = formData.get("customRequestId") as string;
     const newStatus = formData.get("newStatus") as string;
-    const validStatuses = ["pending", "reviewed", "approved", "refused"];
+    const validStatuses = ["pending", "approved", "refused"];
     if (!customRequestId || !validStatuses.includes(newStatus)) {
       return fail(400, { message: "Invalid parameters." });
     }

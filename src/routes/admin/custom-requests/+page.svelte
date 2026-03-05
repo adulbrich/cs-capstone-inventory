@@ -70,16 +70,14 @@
   let viewingRequest = $state<CustomRequest | null>(null);
   let adminNote = $state("");
   let addedItemIndices = $state(new Set<number>());
-  let reviewDecision = $state("reviewed");
-  let dangerOpen = $state(false);
+  let reviewDecision = $state("approved");
   let dangerCustomStatus = $state("");
 
   function openSheet(req: CustomRequest) {
     viewingRequest = req;
     adminNote = req.admin_note || "";
     addedItemIndices = new Set();
-    reviewDecision = "reviewed";
-    dangerOpen = false;
+    reviewDecision = "approved";
     dangerCustomStatus = "";
     isSheetOpen = true;
   }
@@ -87,10 +85,18 @@
   function getCustomStatusColor(status: string) {
     switch (status) {
       case "pending": return "bg-yellow-100 text-yellow-800";
-      case "reviewed": return "bg-blue-100 text-blue-800";
       case "approved": return "bg-green-100 text-green-800";
       case "refused": return "bg-red-100 text-red-800";
       default: return "bg-gray-100 text-gray-800";
+    }
+  }
+
+  function getCustomStatusLabel(status: string) {
+    switch (status) {
+      case "pending": return "Pending";
+      case "approved": return "Approved";
+      case "refused": return "Refused";
+      default: return status;
     }
   }
 
@@ -149,7 +155,7 @@
                   <TableCell>{req.items.length}</TableCell>
                   <TableCell>
                     <Badge class={getCustomStatusColor(req.status)}>
-                      {req.status}
+                      {getCustomStatusLabel(req.status)}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -304,10 +310,9 @@
                 <Label>Decision</Label>
                 <Select type="single" bind:value={reviewDecision}>
                   <SelectTrigger>
-                    {reviewDecision === "approved" ? "Approve" : reviewDecision === "refused" ? "Refuse" : "Mark as Reviewed"}
+                    {reviewDecision === "refused" ? "Refuse" : "Approve"}
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="reviewed" label="Mark as Reviewed">Mark as Reviewed</SelectItem>
                     <SelectItem value="approved" label="Approve">Approve</SelectItem>
                     <SelectItem value="refused" label="Refuse">Refuse</SelectItem>
                   </SelectContent>
@@ -324,8 +329,8 @@
               </div>
             </div>
             <SheetFooter class="mt-4">
-              <Button type="submit">
-                {reviewDecision === "approved" ? "Approve Request" : reviewDecision === "refused" ? "Refuse Request" : "Mark as Reviewed"}
+              <Button type="submit" variant={reviewDecision === "refused" ? "destructive" : "default"}>
+                {reviewDecision === "refused" ? "Refuse Request" : "Approve Request"}
               </Button>
             </SheetFooter>
           </form>
@@ -339,70 +344,57 @@
             </div>
           {/if}
           <p class="text-sm text-muted-foreground">
-            Reviewed on
+            Decision: <span class="font-medium">{getCustomStatusLabel(viewingRequest.status)}</span>
             {viewingRequest.reviewed_at
-              ? new Date(viewingRequest.reviewed_at).toLocaleDateString()
-              : "N/A"}
+              ? `on ${new Date(viewingRequest.reviewed_at).toLocaleDateString()}`
+              : ""}
           </p>
         {/if}
 
         <!-- Danger Zone -->
-        <div class="mt-6">
-          <Button
-            variant="ghost"
-            size="sm"
-            class="text-destructive hover:text-destructive hover:bg-destructive/10 w-full justify-start"
-            onclick={() => { dangerOpen = !dangerOpen; }}
+        <div class="mt-6 border border-destructive/50 rounded-md p-4 space-y-3">
+          <p class="text-sm font-semibold text-destructive">⚠ Danger Zone</p>
+          <p class="text-sm text-muted-foreground">
+            Forcefully override this request's status.
+          </p>
+          <form
+            method="POST"
+            action="?/forceCustomStatus"
+            use:enhance={() => {
+              return async ({ result }) => {
+                if (result.type === "success") {
+                  isSheetOpen = false;
+                  await invalidateAll();
+                } else if (result.type === "failure") {
+                  alert((result.data as { message?: string })?.message || "Failed to update status.");
+                }
+              };
+            }}
           >
-            ⚠ Danger Zone
-          </Button>
-          {#if dangerOpen}
-            <div class="mt-2 border border-destructive/50 rounded-md p-4 space-y-3">
-              <p class="text-sm text-muted-foreground">
-                Forcefully override this request's status.
-              </p>
-              <form
-                method="POST"
-                action="?/forceCustomStatus"
-                use:enhance={() => {
-                  return async ({ result }) => {
-                    if (result.type === "success") {
-                      isSheetOpen = false;
-                      dangerOpen = false;
-                      await invalidateAll();
-                    } else if (result.type === "failure") {
-                      alert((result.data as { message?: string })?.message || "Failed to update status.");
-                    }
-                  };
-                }}
-              >
-                <input type="hidden" name="customRequestId" value={viewingRequest.id} />
-                <input type="hidden" name="newStatus" value={dangerCustomStatus} />
-                <div class="grid gap-2">
-                  <Label>Force Status To</Label>
-                  <Select type="single" bind:value={dangerCustomStatus}>
-                    <SelectTrigger>
-                      {dangerCustomStatus || "Select a status..."}
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pending" label="Pending">Pending</SelectItem>
-                      <SelectItem value="reviewed" label="Reviewed">Reviewed</SelectItem>
-                      <SelectItem value="approved" label="Approved">Approved</SelectItem>
-                      <SelectItem value="refused" label="Refused">Refused</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button
-                  type="submit"
-                  variant="destructive"
-                  class="mt-3 w-full"
-                  disabled={!dangerCustomStatus}
-                >
-                  Force Status Update
-                </Button>
-              </form>
+            <input type="hidden" name="customRequestId" value={viewingRequest.id} />
+            <input type="hidden" name="newStatus" value={dangerCustomStatus} />
+            <div class="grid gap-2">
+              <Label>Force Status To</Label>
+              <Select type="single" bind:value={dangerCustomStatus}>
+                <SelectTrigger>
+                  {dangerCustomStatus ? getCustomStatusLabel(dangerCustomStatus) : "Select a status..."}
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="pending" label="Pending">Pending</SelectItem>
+                  <SelectItem value="approved" label="Approved">Approved</SelectItem>
+                  <SelectItem value="refused" label="Refused">Refused</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-          {/if}
+            <Button
+              type="submit"
+              variant="destructive"
+              class="mt-3 w-full"
+              disabled={!dangerCustomStatus}
+            >
+              Force Status Update
+            </Button>
+          </form>
         </div>
       </div>
     {/if}

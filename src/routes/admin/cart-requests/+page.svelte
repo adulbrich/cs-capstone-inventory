@@ -59,7 +59,6 @@
   let reviewingCart = $state<CartRequest | null>(null);
   let reviewAdminNote = $state("");
   let reviewDecisions = $state<Record<string, string>>({});
-  let dangerOpen = $state(false);
   let dangerCartStatus = $state("");
 
   function openCartSheet(cart: CartRequest) {
@@ -71,7 +70,6 @@
         ci.status === "pending" ? "approved" : ci.status,
       ])
     );
-    dangerOpen = false;
     dangerCartStatus = "";
     isSheetOpen = true;
   }
@@ -353,63 +351,51 @@
         {/if}
 
         <!-- Danger Zone -->
-        <div class="mt-6">
-          <Button
-            variant="ghost"
-            size="sm"
-            class="text-destructive hover:text-destructive hover:bg-destructive/10 w-full justify-start"
-            onclick={() => { dangerOpen = !dangerOpen; }}
+        <div class="mt-6 border border-destructive/50 rounded-md p-4 space-y-3">
+          <p class="text-sm font-semibold text-destructive">⚠ Danger Zone</p>
+          <p class="text-sm text-muted-foreground">
+            Forcefully override this request's status. Item statuses will be updated to match.
+          </p>
+          <form
+            method="POST"
+            action="?/forceCartStatus"
+            use:enhance={() => {
+              return async ({ result }) => {
+                if (result.type === "success") {
+                  isSheetOpen = false;
+                  await invalidateAll();
+                } else if (result.type === "failure") {
+                  alert((result.data as { message?: string })?.message || "Failed to update status.");
+                }
+              };
+            }}
           >
-            ⚠ Danger Zone
-          </Button>
-          {#if dangerOpen}
-            <div class="mt-2 border border-destructive/50 rounded-md p-4 space-y-3">
-              <p class="text-sm text-muted-foreground">
-                Forcefully override this request's status. Item statuses will be updated to match.
-              </p>
-              <form
-                method="POST"
-                action="?/forceCartStatus"
-                use:enhance={() => {
-                  return async ({ result }) => {
-                    if (result.type === "success") {
-                      isSheetOpen = false;
-                      dangerOpen = false;
-                      await invalidateAll();
-                    } else if (result.type === "failure") {
-                      alert((result.data as { message?: string })?.message || "Failed to update status.");
-                    }
-                  };
-                }}
-              >
-                <input type="hidden" name="cartRequestId" value={reviewingCart?.id} />
-                <input type="hidden" name="newStatus" value={dangerCartStatus} />
-                <div class="grid gap-2">
-                  <Label>Force Status To</Label>
-                  <Select type="single" bind:value={dangerCartStatus}>
-                    <SelectTrigger>
-                      {dangerCartStatus || "Select a status..."}
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pending" label="Pending">Pending</SelectItem>
-                      <SelectItem value="reviewed" label="Reviewed">Reviewed</SelectItem>
-                      <SelectItem value="picked_up" label="Picked Up">Picked Up</SelectItem>
-                      <SelectItem value="returned" label="Returned">Returned</SelectItem>
-                      <SelectItem value="cancelled" label="Cancelled">Cancelled</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button
-                  type="submit"
-                  variant="destructive"
-                  class="mt-3 w-full"
-                  disabled={!dangerCartStatus}
-                >
-                  Force Status Update
-                </Button>
-              </form>
+            <input type="hidden" name="cartRequestId" value={reviewingCart?.id} />
+            <input type="hidden" name="newStatus" value={dangerCartStatus} />
+            <div class="grid gap-2">
+              <Label>Force Status To</Label>
+              <Select type="single" bind:value={dangerCartStatus}>
+                <SelectTrigger>
+                  {dangerCartStatus || "Select a status..."}
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="pending" label="Pending">Pending</SelectItem>
+                  <SelectItem value="reviewed" label="Reviewed">Reviewed</SelectItem>
+                  <SelectItem value="picked_up" label="Picked Up">Picked Up</SelectItem>
+                  <SelectItem value="returned" label="Returned">Returned</SelectItem>
+                  <SelectItem value="cancelled" label="Cancelled">Cancelled</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-          {/if}
+            <Button
+              type="submit"
+              variant="destructive"
+              class="mt-3 w-full"
+              disabled={!dangerCartStatus}
+            >
+              Force Status Update
+            </Button>
+          </form>
         </div>
       </div>
     {/if}
