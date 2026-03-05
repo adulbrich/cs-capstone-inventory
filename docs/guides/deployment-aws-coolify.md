@@ -12,26 +12,57 @@ This guide walks through deploying the inventory management app to production on
 Internet
   └── AWS EC2 (t3.medium, Ubuntu 24.04)
         ├── Caddy (automatic HTTPS via Let's Encrypt)
-        │     ├── yourdomain.com → SvelteKit app
-        │     └── yourdomain.com/api → Supabase Kong gateway
+        │     ├── yourdomain.com      → SvelteKit app (port 3000)
+        │     └── yourdomain.com/api  → Supabase Kong gateway (port 8000)
         └── Coolify (Docker-based PaaS — internal only, SSH tunnel to access)
               ├── Supabase stack (DB, Auth, Storage, Studio — all internal)
               └── SvelteKit app container
-
-Your laptop
-  └── SSH tunnel → Supabase Studio (safe, never open to internet)
-  └── SSH tunnel → Coolify dashboard (safe, never open to internet)
 ```
 
-**Ports open to internet:** 80, 443, 22 (SSH — you'll restrict this to your IP)
+**Ports open to internet:** 80, 443, 22 (SSH — restricted to your IP)
 **Ports never open:** 5432 (Postgres), 3000 (Studio), 8000 (Coolify), everything else
+
+> **Why is `/api` public?** Supabase has two types of traffic. Database queries go server-to-server (private). But auth flows — including SSO — require the **browser** to talk to Supabase directly: the browser initiates the redirect, OSU's identity server posts the SAML assertion back to your Supabase ACS endpoint, and Supabase redirects the browser to your `/auth/callback`. All of this happens at the network level between OSU's servers and yours. The `/api` route exposes only the Supabase API (Kong gateway), never the database port.
+
+---
+
+## Order of Operations
+
+The deployment has some apparent chicken-and-egg dependencies. Here is the correct order so nothing blocks you:
+
+```
+1. Allocate Elastic IP (do this NOW — 2 minutes, free)
+        │
+        ▼
+2. Email OSU IT with two requests in one message:
+   - Subdomain DNS: point yourcapstone.oregonstate.edu → <Elastic IP>
+   - SSO registration: your ACS URL is already known (see SSO guide)
+   OSU IT works on both in parallel. Continue while you wait.
+        │
+        ▼
+3. Launch EC2, install Docker + Coolify, deploy Supabase + app
+        │
+        ▼
+4. Once OSU IT sets the DNS → Let's Encrypt certificate issues automatically
+        │
+        ▼
+5. Configure Supabase SITE_URL and API_EXTERNAL_URL with your final domain
+        │
+        ▼
+6. Once OSU IT responds with their IdP metadata → add it to Supabase
+        │
+        ▼
+7. Test SSO end-to-end
+```
+
+**Key insight:** You can give OSU IT your ACS URL before the server is deployed because the URL format is predictable — it's always `https://yourdomain.com/api/auth/v1/sso/saml/acs`. Sending both requests in one email saves a full round-trip that could cost days.
 
 ---
 
 ## Prerequisites
 
 - AWS account with billing enabled
-- A domain name (from any registrar: Namecheap, Cloudflare, Route 53, etc.)
+- A domain name (from any registrar: Namecheap, Cloudflare, Route 53, etc.) — **or** you can use an `oregonstate.edu` subdomain from OSU IT
 - A computer with `ssh` installed (macOS/Linux: built-in; Windows: use WSL or Git Bash)
 
 ---
@@ -44,40 +75,40 @@ Before launching, create an SSH key pair so you can log in.
 
 1. Go to **AWS Console → EC2 → Key Pairs** (under "Network & Security")
 2. Click **Create key pair**
-3. Name: `inventory-app-key`
+3. Name: `capstone-inventory-key`
 4. Type: RSA, format: `.pem`
-5. Click **Create** — your browser downloads `inventory-app-key.pem`
+5. Click **Create** — your browser downloads `capstone-inventory-key.pem`
 6. Move it somewhere safe and restrict permissions:
    ```bash
-   mv ~/Downloads/inventory-app-key.pem ~/.ssh/
-   chmod 400 ~/.ssh/inventory-app-key.pem
+   mv ~/Downloads/capstone-inventory-key.pem ~/.ssh/
+   chmod 400 ~/.ssh/capstone-inventory-key.pem
    ```
 
 ### 1.2 Create a Security Group
 
 1. Go to **EC2 → Security Groups** → **Create security group**
-2. Name: `inventory-app-sg`, VPC: your default VPC
+2. Name: `capstone-inventory-sg`, VPC: your default VPC
 3. Add inbound rules:
 
    | Type | Port | Source | Note |
    |------|------|--------|------|
-   | SSH | 22 | My IP | AWS fills this in — your current IP only |
+   | SSH | 22 | 128.193.0.0/16 | OSU network CIDR, or your current IP |
    | HTTP | 80 | 0.0.0.0/0 | Let's Encrypt verification + redirect to HTTPS |
    | HTTPS | 443 | 0.0.0.0/0 | Production traffic |
 
 4. Leave outbound: all traffic → 0.0.0.0/0 (default)
 5. Click **Create security group**
 
-> **Important:** The "My IP" restriction on SSH means you can only SSH from your current IP. If you change networks, update this rule in the AWS Console (EC2 → Security Groups → edit inbound rules).
+> **Important:** The SSH restriction means you can only SSH from that network. If you change networks, update this rule in the AWS Console (EC2 → Security Groups → edit inbound rules).
 
 ### 1.3 Launch the Instance
 
 1. Go to **EC2 → Instances → Launch instances**
-2. Name: `inventory-app`
+2. Name: `capstone-inventory`
 3. **AMI:** Search for `Ubuntu Server 24.04 LTS` → select the 64-bit (x86) HVM option
 4. **Instance type:** `t3.medium` (2 vCPU, 4 GB RAM — minimum for self-hosted Supabase)
-5. **Key pair:** select `inventory-app-key`
-6. **Security group:** select `inventory-app-sg`
+5. **Key pair:** select `capstone-inventory-key`
+6. **Security group:** select `capstone-inventory-sg`
 7. **Storage:** Change root volume to **30 GB, gp3**. Check "**Delete on termination: No**" — this keeps your data if the instance is accidentally terminated.
 8. Click **Launch instance**
 
@@ -89,7 +120,9 @@ An Elastic IP is a static public IP that stays the same even if you stop/restart
 2. Leave defaults → **Allocate**
 3. Select the new IP → **Actions → Associate Elastic IP address**
 4. Choose your instance → **Associate**
-5. **Note this IP** — you'll use it for DNS and SSH
+5. **Note this IP** — you'll use it for DNS, SSH, and to send to OSU IT
+
+> **Do this first.** You can allocate an Elastic IP before the EC2 instance is even running. The IP is yours as soon as it's allocated, so you can share it with OSU IT immediately.
 
 ---
 
@@ -97,12 +130,18 @@ An Elastic IP is a static public IP that stays the same even if you stop/restart
 
 Point your domain at the Elastic IP.
 
-Log in to your domain registrar and add:
+**If using your own domain (Namecheap, Cloudflare, etc.):**
+
+Log in to your registrar and add:
 
 | Record Type | Name | Value | TTL |
 |-------------|------|-------|-----|
 | A | `@` (or `yourdomain.com`) | `<Elastic IP>` | 300 |
 | A | `www` | `<Elastic IP>` | 300 |
+
+**If using an OSU subdomain:**
+
+Include the Elastic IP in your OSU IT email (see Order of Operations above). OSU IT will create the DNS record on their side. You have no action here until they respond.
 
 DNS propagates within minutes to hours. You can check with:
 ```bash
@@ -116,7 +155,7 @@ dig yourdomain.com +short
 
 ```bash
 # SSH into your new server
-ssh -i ~/.ssh/inventory-app-key.pem ubuntu@<ELASTIC_IP>
+ssh -i ~/.ssh/capstone-inventory-key.pem ubuntu@<ELASTIC_IP>
 ```
 
 Once connected, install Docker:
@@ -132,14 +171,16 @@ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
   -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-  https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
 
 sudo apt-get update -y
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 # Start Docker and make it start on boot
 sudo systemctl enable docker
@@ -177,7 +218,7 @@ Coolify's dashboard should **never be open to the internet**. Access it through 
 **On your local machine** (new terminal window, keep the server SSH open separately):
 
 ```bash
-ssh -i ~/.ssh/inventory-app-key.pem -N -L 8000:localhost:8000 ubuntu@<ELASTIC_IP>
+ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 8000:localhost:8000 ubuntu@<ELASTIC_IP>
 ```
 
 Now open `http://localhost:8000` in your browser. You're securely accessing Coolify through the encrypted SSH tunnel.
@@ -222,21 +263,6 @@ openssl rand -base64 16
 
 **Generate JWT keys** — Supabase needs two signed JWTs using your JWT secret:
 
-The easiest way is to use the Supabase CLI locally:
-```bash
-# Install Supabase CLI if you haven't:
-brew install supabase/tap/supabase
-
-# Generate keys using your JWT_SECRET
-supabase status  # Only works for linked projects
-```
-
-Alternatively, use [jwt.io](https://jwt.io) manually:
-- **Anon key payload:** `{ "role": "anon", "iss": "supabase", "iat": 1700000000, "exp": 2000000000 }`
-- **Service role key payload:** `{ "role": "service_role", "iss": "supabase", "iat": 1700000000, "exp": 2000000000 }`
-- Algorithm: HS256, secret: your JWT_SECRET
-
-Or use this one-liner script on your local machine:
 ```bash
 JWT_SECRET="your-jwt-secret-here"
 node -e "
@@ -267,7 +293,7 @@ SERVICE_ROLE_KEY=<generated-service-role-jwt>
 DASHBOARD_USERNAME=supabase
 DASHBOARD_PASSWORD=<generated-above>
 
-# Your domain
+# Your domain — these must be set to your final domain, not an IP
 API_EXTERNAL_URL=https://yourdomain.com/api
 SITE_URL=https://yourdomain.com
 
@@ -279,6 +305,8 @@ SMTP_PASS=<sendgrid-api-key>
 SMTP_ADMIN_EMAIL=noreply@yourdomain.com
 SMTP_SENDER_NAME=Inventory System
 ```
+
+> **Note on `SITE_URL` and `API_EXTERNAL_URL`:** These must be the final public domain — they're embedded into auth emails and OAuth redirect validation. If you don't have the domain yet, deploy with a placeholder and update them once DNS resolves. Restart the auth service after changing them.
 
 > **SMTP:** Without SMTP, users won't receive password reset emails. SendGrid has a free tier (100 emails/day). Sign up at sendgrid.com and create an API key.
 
@@ -300,7 +328,7 @@ Connect to Postgres through an SSH tunnel:
 
 ```bash
 # Terminal 1: open tunnel
-ssh -i ~/.ssh/inventory-app-key.pem -N -L 5432:localhost:5432 ubuntu@<ELASTIC_IP>
+ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 5432:localhost:5432 ubuntu@<ELASTIC_IP>
 
 # Terminal 2: push migrations (from your project root)
 supabase db push --db-url "postgresql://postgres:<POSTGRES_PASSWORD>@localhost:5432/postgres"
@@ -376,64 +404,57 @@ Click **Deploy**. Coolify builds the Docker image, starts the container, and the
 
 ## Step 9 — Access Supabase Studio Safely
 
-Supabase Studio runs internally at port `5000` (or `3000` — check `docker ps` on the server). Access it only via SSH tunnel:
+Supabase Studio runs internally. Access it only via SSH tunnel:
 
 ```bash
 # Find the Studio port first:
 ssh ubuntu@<ELASTIC_IP> "docker ps | grep studio"
 
 # Open tunnel (adjust port if different from 5000):
-ssh -i ~/.ssh/inventory-app-key.pem -N -L 54321:localhost:5000 ubuntu@<ELASTIC_IP>
+ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 54321:localhost:5000 ubuntu@<ELASTIC_IP>
 ```
 
 Open `http://localhost:54321` — you're in Studio through the encrypted SSH tunnel. Log in with `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD`.
 
-**Convenience alias** (add to `~/.zshrc` or `~/.bash_profile`):
+**Convenience aliases** (add to `~/.zshrc` or `~/.bash_profile`):
 ```bash
-alias studio-tunnel='ssh -i ~/.ssh/inventory-app-key.pem -N -L 54321:localhost:5000 ubuntu@<ELASTIC_IP>'
-alias coolify-tunnel='ssh -i ~/.ssh/inventory-app-key.pem -N -L 8000:localhost:8000 ubuntu@<ELASTIC_IP>'
+alias studio-tunnel='ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 54321:localhost:5000 ubuntu@<ELASTIC_IP>'
+alias coolify-tunnel='ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 8000:localhost:8000 ubuntu@<ELASTIC_IP>'
+alias db-tunnel='ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 5432:localhost:5432 ubuntu@<ELASTIC_IP>'
 ```
 
 ---
 
-## Step 10 — Automated Database Backups
+## Step 10 — Database Backups
 
 ### 10.1 Create the Backup Script
 
 On the server:
 ```bash
-sudo nano /opt/backup-db.sh
-```
-
-```bash
+sudo tee /opt/backup-db.sh <<'EOF'
 #!/bin/bash
 set -euo pipefail
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="/tmp/db_backup_${TIMESTAMP}.sql.gz"
 
-# Find the Supabase DB container name
 DB_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'supabase.*db|db.*supabase' | head -1)
 
 echo "[$(date)] Starting backup (container: $DB_CONTAINER)..."
 
 docker exec "$DB_CONTAINER" pg_dump -U postgres postgres | gzip > "$BACKUP_FILE"
 
-# Upload to S3 (requires aws CLI and appropriate IAM permissions or configured credentials)
-# Replace BUCKET_NAME with your S3 bucket
+# Upload to S3
 aws s3 cp "$BACKUP_FILE" "s3://BUCKET_NAME/daily/db_backup_${TIMESTAMP}.sql.gz"
 
 rm "$BACKUP_FILE"
 echo "[$(date)] Backup uploaded to S3."
-```
+EOF
 
-```bash
 sudo chmod +x /opt/backup-db.sh
 ```
 
-**S3 bucket:** Create one in the AWS Console (S3 → Create bucket). Either:
-- Attach an IAM role to your EC2 instance (recommended — no credentials stored on disk), or
-- Run `aws configure` on the server with an IAM user that has S3 write access
+**S3 bucket:** Create one in the AWS Console (S3 → Create bucket). Attach an IAM role to your EC2 instance with S3 write access (recommended — no credentials stored on disk).
 
 ### 10.2 Schedule with Cron
 
@@ -444,42 +465,84 @@ sudo crontab -e
 0 3 * * * /opt/backup-db.sh >> /var/log/db-backup.log 2>&1
 ```
 
-### 10.3 Test and Verify
+### 10.3 Test the Backup
 
 ```bash
-# Test manually
 sudo /opt/backup-db.sh
-
-# Check it appeared in S3
 aws s3 ls s3://BUCKET_NAME/daily/
 ```
 
 ### 10.4 Restore from Backup
 
 ```bash
-# Download
 aws s3 cp s3://BUCKET_NAME/daily/db_backup_<timestamp>.sql.gz /tmp/restore.sql.gz
 
-# Restore
 DB_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'supabase.*db' | head -1)
 gunzip -c /tmp/restore.sql.gz | docker exec -i "$DB_CONTAINER" psql -U postgres -d postgres
 ```
 
 ---
 
-## Step 11 — Deploying Updates
+## Step 11 — Deploying App Updates
 
-### App Updates (SvelteKit)
+### Option A: Manual Redeploy (simplest)
 
-Push to GitHub. Then either:
-- **Manually:** In Coolify → your SvelteKit resource → **Redeploy**
-- **Automatically:** Enable **Auto Deploy** on the resource in Coolify (registers a GitHub webhook — zero-click deploys on every push)
+In Coolify → your SvelteKit resource → click **Redeploy**. Coolify pulls the latest commit from GitHub, rebuilds the image, and swaps the container with zero-downtime.
 
-### Database Migrations
+### Option B: Auto-Deploy on Git Push (recommended)
+
+1. In Coolify → your SvelteKit resource → **Settings** → enable **Auto Deploy**
+2. Coolify registers a webhook in your GitHub repository
+3. Every push to the configured branch triggers a new build automatically — no manual steps
+
+To see webhook status: GitHub repo → Settings → Webhooks.
+
+### Option C: Deploy via Coolify API (CI/CD pipelines)
+
+Coolify exposes a REST API you can call from GitHub Actions or any CI system:
+
+```bash
+# Get your API key: Coolify dashboard → Profile → API Keys → Create
+curl -X POST "http://localhost:8000/api/v1/deploy" \
+  -H "Authorization: Bearer <COOLIFY_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{ "uuid": "<resource-uuid>" }'
+```
+
+Find the resource UUID in Coolify → your resource → Settings → UUID.
+
+Example GitHub Actions workflow (`.github/workflows/deploy.yml`):
+```yaml
+name: Deploy to Production
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify deploy
+        run: |
+          curl -X POST "${{ secrets.COOLIFY_URL }}/api/v1/deploy" \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{ "uuid": "${{ secrets.COOLIFY_RESOURCE_UUID }}" }'
+```
+
+Store `COOLIFY_URL` (your SSH-tunneled address or a private endpoint), `COOLIFY_API_KEY`, and `COOLIFY_RESOURCE_UUID` as GitHub repository secrets.
+
+### Option D: Rollback
+
+Coolify keeps a history of previous deployments. To roll back: Coolify → your resource → **Deployments** tab → find the previous successful deploy → **Redeploy**.
+
+### Deploying Database Migrations
+
+Migrations are separate from the app container — run them manually:
 
 ```bash
 # Open SSH tunnel to Postgres
-ssh -i ~/.ssh/inventory-app-key.pem -N -L 5432:localhost:5432 ubuntu@<ELASTIC_IP> &
+ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 5432:localhost:5432 ubuntu@<ELASTIC_IP> &
 
 # Push migrations
 supabase db push --db-url "postgresql://postgres:<PASSWORD>@localhost:5432/postgres"
@@ -487,6 +550,141 @@ supabase db push --db-url "postgresql://postgres:<PASSWORD>@localhost:5432/postg
 # Close tunnel
 kill %1
 ```
+
+Run migrations **before** deploying the app update when a release adds new tables or columns, so the app never queries a schema that doesn't exist yet.
+
+---
+
+## Step 12 — Updating Supabase Itself
+
+Supabase periodically releases new versions of their Docker images (auth, storage, realtime, etc.). Staying reasonably current gets you bug fixes and security patches.
+
+### Check for Updates
+
+Supabase publishes release notes at [github.com/supabase/supabase/releases](https://github.com/supabase/supabase/releases). There's no automatic notification — check occasionally or watch the repo.
+
+### Before Updating: Take a Backup
+
+**Always back up before updating Supabase:**
+
+```bash
+ssh ubuntu@<ELASTIC_IP> sudo /opt/backup-db.sh
+```
+
+Verify the backup appeared in S3 before proceeding.
+
+### Update Supabase in Coolify
+
+1. In Coolify → your Supabase resource → **Settings**
+2. Review the Docker image tags. The Supabase Coolify template pins images to specific versions (e.g., `supabase/gotrue:v2.x.x`)
+3. Update each image tag to the new version
+4. Click **Save** then **Redeploy**
+5. Coolify pulls the new images and restarts the containers one by one
+
+> **Read the release notes first.** Most Supabase updates are backwards-compatible, but major versions occasionally require running a migration on the internal `supabase_migrations` schema. Release notes will call this out explicitly.
+
+### After Updating: Verify
+
+```bash
+# Check all Supabase containers are running
+ssh ubuntu@<ELASTIC_IP> "docker ps | grep supabase"
+
+# Test auth endpoint
+curl https://yourdomain.com/api/auth/v1/health
+
+# Test PostgREST
+curl https://yourdomain.com/api/rest/v1/items \
+  -H "apikey: <ANON_KEY>"
+```
+
+If anything breaks, Coolify lets you redeploy the previous version from the Deployments tab, and you can restore the database from your backup.
+
+---
+
+## Deploying Multiple Apps on One Coolify Server
+
+If you have a second app with a similar stack (SvelteKit + Supabase), you have three deployment options:
+
+### Option A: Same EC2, Separate Supabase per App
+
+Each app gets its own Supabase stack and its own SvelteKit container, all on the same EC2 and managed by the same Coolify.
+
+```
+EC2 (t3.large or bigger)
+  └── Coolify
+        ├── Project: inventory-app
+        │     ├── Supabase stack (ports internal)
+        │     └── SvelteKit → inventory.yourdomain.com
+        └── Project: other-app
+              ├── Supabase stack (ports internal)
+              └── SvelteKit → other.yourdomain.com
+```
+
+**Good when:**
+- Apps have separate data (no sharing needed)
+- You want full isolation — one app's DB problems can't affect the other
+- You want to take apps offline independently
+
+**Watch out for:**
+- Two Supabase stacks together consume ~1.5–2 GB RAM just at idle. A `t3.medium` (4 GB) will be tight. Use a `t3.large` (8 GB, ~$60/mo) or `t3.xlarge` (16 GB, ~$120/mo) depending on load.
+- Check resource usage on the server: `htop` or `docker stats`
+
+**In Coolify:** Just create a second Project and add a new Supabase resource + SvelteKit resource to it. Coolify handles routing both domains through Caddy automatically.
+
+### Option B: Same EC2, Shared Supabase
+
+One Supabase instance serves both apps. Each app gets its own schema or uses separate tables and RLS policies.
+
+```
+EC2 (t3.medium is fine)
+  └── Coolify
+        ├── Supabase stack (one, shared)
+        ├── SvelteKit: inventory → inventory.yourdomain.com
+        └── SvelteKit: other-app → other.yourdomain.com
+```
+
+**Good when:**
+- Apps are related (e.g., two capstone tools for the same program)
+- You want the cheapest possible setup
+- You're okay managing a single database for both
+
+**Watch out for:**
+- RLS policies and migrations for both apps live in the same DB — keep them organized
+- If you need to wipe the DB for one app, it affects both
+- Shared `auth.users` table — SSO logins create users in both apps' pool
+
+**In Coolify:** Deploy Supabase once. Give both SvelteKit apps the same `PUBLIC_SUPABASE_URL` and `PUBLIC_SUPABASE_ANON_KEY` (but use separate service role keys if needed).
+
+### Option C: Separate EC2 per App
+
+Each app gets its own EC2 instance, Coolify installation, and Supabase stack.
+
+```
+EC2 #1 (t3.medium)            EC2 #2 (t3.medium)
+  └── Coolify                   └── Coolify
+        ├── Supabase                  ├── Supabase
+        └── inventory-app             └── other-app
+```
+
+**Good when:**
+- Apps have very different scaling needs or traffic patterns
+- You need strict security isolation (different AWS accounts, VPCs)
+- One app is resource-heavy and would starve the other
+
+**Watch out for:**
+- Doubles cost (~$38–42/mo × 2)
+- Two servers to maintain and update
+
+### Which Option to Choose?
+
+| | Same server, separate Supabase | Same server, shared Supabase | Separate servers |
+|--|--|--|--|
+| Cost | ~$60–120/mo | ~$38–42/mo | ~$76–84/mo |
+| Isolation | Good | Low | Full |
+| Complexity | Low | Medium | Low |
+| Best for | 2 unrelated apps | 2 related apps | Very different workloads |
+
+For two capstone-style apps with low traffic, **Option A on a `t3.large`** is the cleanest choice: full isolation, simple setup, one server to maintain.
 
 ---
 
@@ -504,6 +702,7 @@ Before going live, verify:
 - [ ] Supabase service role key is only in server-side environment variables, never client-side
 - [ ] SMTP configured so auth emails are deliverable
 - [ ] Backups tested — restore one backup to a test DB to confirm it works
+- [ ] `SITE_URL` and `API_EXTERNAL_URL` match your final domain exactly
 
 ---
 
@@ -511,14 +710,16 @@ Before going live, verify:
 
 | Resource | Monthly (us-west-2) |
 |----------|---------------------|
-| EC2 t3.medium | ~$34 |
+| EC2 t3.medium (1 app) | ~$34 |
+| EC2 t3.large (2 apps) | ~$60 |
 | EBS 30 GB gp3 | ~$2.40 |
 | Elastic IP | Free while attached |
 | S3 backups (~5 GB) | ~$0.12 |
 | Data transfer | ~$1–5 |
-| **Total** | **~$38–42/month** |
+| **Total (1 app, t3.medium)** | **~$38–42/month** |
+| **Total (2 apps, t3.large)** | **~$64–68/month** |
 
-> **Scaling:** If the server feels slow, upgrade the instance type in EC2 Console → Actions → Instance Settings → Change instance type (requires a brief stop/start).
+> **Scaling:** If the server feels slow, upgrade the instance type in EC2 Console → Actions → Instance Settings → Change instance type (requires a brief stop/start, no data loss).
 
 ---
 
@@ -526,29 +727,35 @@ Before going live, verify:
 
 ```bash
 # SSH into server
-ssh -i ~/.ssh/inventory-app-key.pem ubuntu@<ELASTIC_IP>
+ssh -i ~/.ssh/capstone-inventory-key.pem ubuntu@<ELASTIC_IP>
 
 # Open Coolify dashboard
-ssh -i ~/.ssh/inventory-app-key.pem -N -L 8000:localhost:8000 ubuntu@<ELASTIC_IP>
+ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 8000:localhost:8000 ubuntu@<ELASTIC_IP>
 # → http://localhost:8000
 
 # Open Supabase Studio
-ssh -i ~/.ssh/inventory-app-key.pem -N -L 54321:localhost:5000 ubuntu@<ELASTIC_IP>
+ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 54321:localhost:5000 ubuntu@<ELASTIC_IP>
 # → http://localhost:54321
 
 # Push database migrations
-ssh -i ~/.ssh/inventory-app-key.pem -N -L 5432:localhost:5432 ubuntu@<ELASTIC_IP> &
+ssh -i ~/.ssh/capstone-inventory-key.pem -N -L 5432:localhost:5432 ubuntu@<ELASTIC_IP> &
 supabase db push --db-url "postgresql://postgres:<PASSWORD>@localhost:5432/postgres"
 kill %1
 
 # Manual backup
 ssh ubuntu@<ELASTIC_IP> sudo /opt/backup-db.sh
 
-# View app logs (adjust container name as needed)
+# Check all container statuses
+ssh ubuntu@<ELASTIC_IP> "docker ps --format 'table {{.Names}}\t{{.Status}}'"
+
+# View app logs
 ssh ubuntu@<ELASTIC_IP> "docker logs -f \$(docker ps -q -f name=sveltekit)"
 
-# Restart a container (e.g., after config change)
+# Restart a container (e.g., after env var change)
 ssh ubuntu@<ELASTIC_IP> "docker restart \$(docker ps -q -f name=sveltekit)"
+
+# Check resource usage
+ssh ubuntu@<ELASTIC_IP> "docker stats --no-stream"
 ```
 
 ---
@@ -558,12 +765,13 @@ ssh ubuntu@<ELASTIC_IP> "docker restart \$(docker ps -q -f name=sveltekit)"
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | Site shows 502 | SvelteKit container stopped | Check Coolify logs; click Redeploy |
-| Supabase auth fails | `PUBLIC_SUPABASE_URL` wrong | Confirm `yourdomain.com/api` routes to Kong; check Supabase logs |
-| Studio won't load | Tunnel not open or wrong port | Run `docker ps | grep studio` on server to find port |
+| Supabase auth fails | `PUBLIC_SUPABASE_URL` wrong or `/api` not routing | Confirm `yourdomain.com/api` routes to Kong; check Supabase logs |
+| SSO redirect fails | `API_EXTERNAL_URL` mismatch | Must match exactly what OSU IT registered as your ACS domain |
+| Studio won't load | Tunnel not open or wrong port | Run `docker ps \| grep studio` on server to find port |
 | Migration push fails | SSH tunnel not active | Start the tunnel first, then push |
 | Let's Encrypt SSL fails | DNS not propagated yet | Wait and retry; check `dig yourdomain.com` |
 | Can't SSH anymore | Your IP changed | Update SSH inbound rule in AWS Security Group |
-| "Permission denied" on Docker commands | User not in docker group | `sudo usermod -aG docker ubuntu && newgrp docker` |
+| Server feels slow | Running two Supabase stacks on t3.medium | Upgrade instance type; check `docker stats` |
 
 ---
 
@@ -678,10 +886,10 @@ output "ssh_command" { value = "ssh -i ~/.ssh/${var.key_pair_name}.pem ubuntu@${
 
 ```hcl
 variable "aws_region"        { default = "us-west-2" }
-variable "app_name"          { default = "inventory-app" }
+variable "app_name"          { default = "capstone-inventory" }
 variable "instance_type"     { default = "t3.medium" }
 variable "key_pair_name"     { type = string }
-variable "ssh_allowed_cidrs" { type = list(string); default = ["0.0.0.0/0"] }  # change to your IP
+variable "ssh_allowed_cidrs" { type = list(string); default = ["0.0.0.0/0"] }  # change to your IP/OSU CIDR
 ```
 
 ### Usage
@@ -689,8 +897,8 @@ variable "ssh_allowed_cidrs" { type = list(string); default = ["0.0.0.0/0"] }  #
 ```bash
 cd infra/
 terraform init
-terraform plan -var="key_pair_name=inventory-app-key"
-terraform apply -var="key_pair_name=inventory-app-key"
+terraform plan -var="key_pair_name=capstone-inventory-key"
+terraform apply -var="key_pair_name=capstone-inventory-key"
 # After apply, note the elastic_ip output and continue from Step 2 (DNS) above
 ```
 
@@ -712,32 +920,24 @@ pip3 install podman-compose
 ### Deploy Supabase
 
 ```bash
-# Clone Supabase
 git clone --depth 1 https://github.com/supabase/supabase
 cd supabase/docker
-
-# Copy and edit the env file
 cp .env.example .env
 nano .env  # Fill in POSTGRES_PASSWORD, JWT_SECRET, ANON_KEY, SERVICE_ROLE_KEY, etc.
-
-# Start all services
 podman-compose up -d
 ```
 
 ### Run SvelteKit with a Podman container
 
 ```bash
-# Build image
-podman build -t inventory-app .
-
-# Run (adjust port as needed)
+podman build -t capstone-inventory .
 podman run -d \
-  --name inventory-app \
+  --name capstone-inventory \
   -p 3000:3000 \
   -e PUBLIC_SUPABASE_URL=... \
   -e PUBLIC_SUPABASE_ANON_KEY=... \
   -e ORIGIN=https://yourdomain.com \
-  inventory-app
+  capstone-inventory
 ```
 
 ### Reverse Proxy with Caddy
